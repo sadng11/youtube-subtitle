@@ -4,7 +4,8 @@
   "version": "1.0.0",
   "description": "ترجمه هوشمند زیرنویس انگلیسی ویدیوهای یوتیوب به زبان فارسی با هوش مصنوعی (Gemini / OpenAI)",
   "permissions": [
-    "storage"
+    "storage",
+    "activeTab"
   ],
   "host_permissions": [
     "https://www.youtube.com/*",

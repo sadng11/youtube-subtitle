@@ -168,31 +168,110 @@
   font-size: calc(var(--yt-fa-font-size, 20px) * 0.95);
 }
 
-/* Quick toggle button inside YouTube control bar */
+/* Control button inside YouTube control bar (Interactive Pill Button) */
 .yt-fa-control-btn {
-  display: inline-flex;
+  display: inline-flex !important;
   align-items: center;
   justify-content: center;
-  background: none;
-  border: none;
+  gap: 6px;
+  height: 32px;
+  margin: auto 6px;
+  padding: 0 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #ffffff;
   cursor: pointer;
-  padding: 0;
-  width: 48px;
-  height: 100%;
-  opacity: 0.85;
-  transition: opacity 0.15s ease;
+  font-family: 'Vazirmatn', 'Segoe UI', Tahoma, system-ui, -apple-system, sans-serif;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  vertical-align: middle;
+  direction: rtl;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+  box-sizing: border-box;
 }
 
 .yt-fa-control-btn:hover {
-  opacity: 1;
+  background: rgba(255, 255, 255, 0.22);
+  border-color: rgba(255, 255, 255, 0.35);
+  transform: translateY(-1px);
 }
 
-.yt-fa-control-btn svg {
-  width: 24px;
-  height: 24px;
-  fill: #ffffff;
+.yt-fa-control-btn .yt-fa-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
 }
 
-.yt-fa-control-btn.active svg {
-  fill: #ef4444; /* Active YouTube red accent */
+.yt-fa-control-btn .yt-fa-btn-icon svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.yt-fa-control-btn .yt-fa-btn-label {
+  display: inline-block;
+  font-weight: 600;
+}
+
+/* State: Idle / Ready to start translation */
+.yt-fa-control-btn.state-idle {
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.5), rgba(79, 70, 229, 0.5));
+  border-color: rgba(147, 197, 253, 0.5);
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+}
+.yt-fa-control-btn.state-idle:hover {
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.75), rgba(79, 70, 229, 0.75));
+  border-color: rgba(191, 219, 254, 0.8);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.5);
+}
+
+/* State: Loading / Translating */
+.yt-fa-control-btn.state-loading {
+  background: rgba(217, 119, 6, 0.4);
+  border-color: rgba(251, 191, 36, 0.6);
+  color: #fef3c7;
+  cursor: wait;
+}
+
+/* State: Active (Persian subtitles ON) */
+.yt-fa-control-btn.state-active {
+  background: rgba(16, 185, 129, 0.3);
+  border-color: rgba(52, 211, 153, 0.6);
+  color: #a7f3d0;
+}
+.yt-fa-control-btn.state-active:hover {
+  background: rgba(16, 185, 129, 0.45);
+}
+
+/* State: Inactive (Translated but Persian overlay toggled OFF by user) */
+.yt-fa-control-btn.state-inactive {
+  background: rgba(100, 116, 139, 0.25);
+  border-color: rgba(148, 163, 184, 0.35);
+  color: #cbd5e1;
+}
+
+/* State: Cached (Available in storage, ready to load on click) */
+.yt-fa-control-btn.state-cached {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.4), rgba(14, 165, 233, 0.4));
+  border-color: rgba(94, 234, 212, 0.6);
+  color: #ffffff;
+}
+
+/* Responsive: Collapse text label on small width controls */
+@media (max-width: 800px) {
+  .yt-fa-control-btn {
+    padding: 0 8px;
+    margin: auto 3px;
+  }
+  .yt-fa-control-btn .yt-fa-btn-label {
+    display: none;
+  }
 }

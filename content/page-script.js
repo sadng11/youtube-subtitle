@@ -117,11 +117,14 @@
 
   window.addEventListener('message', (event) => {
     if (event.source !== window || !event.data) return;
-    if (event.data.type === 'YT_FA_FORCE_ENABLE_CC' || event.data.type === 'YT_FA_TRANSLATE_GET_TRACKS') {
+    if (
+      event.data.type === 'YT_FA_START_TRANSLATION' ||
+      event.data.type === 'YT_FA_FORCE_ENABLE_CC' ||
+      event.data.type === 'YT_FA_TRANSLATE_GET_TRACKS'
+    ) {
       forceReloadCaptions();
     }
   });
 
   window.postMessage({ type: 'YT_FA_PAGE_SCRIPT_READY' }, '*');
-  setTimeout(forceReloadCaptions, 800);
 })();

@@ -20,6 +20,19 @@
       <div class="status-indicator online" id="statusIndicator" title="آماده به کار"></div>
     </header>
 
+    <!-- Quick Video Action Card (Shown when YouTube Video is active) -->
+    <div class="card video-action-card hidden" id="videoActionCard">
+      <div class="video-action-header">
+        <div class="video-status-dot" id="videoStatusDot"></div>
+        <span class="video-action-title" id="videoActionTitle">ویدیوی یوتیوب شناسایی شد</span>
+      </div>
+      <div class="video-action-desc" id="videoActionDesc">برای شروع ترجمه با هوش مصنوعی کلیک کنید.</div>
+      <button type="button" id="startTranslateBtn" class="btn btn-action-translate">
+        <span class="action-btn-icon">✨</span>
+        <span id="startTranslateBtnText">شروع ترجمه هوشمند این ویدیو</span>
+      </button>
+    </div>
+
     <!-- Main Switch -->
     <div class="card toggle-card">
       <div class="card-info">
@@ -28,6 +41,18 @@
       </div>
       <label class="switch">
         <input type="checkbox" id="enabledToggle" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <!-- Auto Translate Switch -->
+    <div class="card toggle-card">
+      <div class="card-info">
+        <span class="card-title">ترجمه خودکار ویدیوها</span>
+        <span class="card-desc">شروع خودکار ترجمه (خاموش = شروع فقط با دکمه و بدون هزینه اضافه)</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="autoTranslateToggle">
         <span class="slider"></span>
       </label>
     </div>

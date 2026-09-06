@@ -2,7 +2,15 @@
 
 document.addEventListener('DOMContentLoaded', async () => {
   // Elements
+  const videoActionCard = document.getElementById('videoActionCard');
+  const videoStatusDot = document.getElementById('videoStatusDot');
+  const videoActionTitle = document.getElementById('videoActionTitle');
+  const videoActionDesc = document.getElementById('videoActionDesc');
+  const startTranslateBtn = document.getElementById('startTranslateBtn');
+  const startTranslateBtnText = document.getElementById('startTranslateBtnText');
+
   const enabledToggle = document.getElementById('enabledToggle');
+  const autoTranslateToggle = document.getElementById('autoTranslateToggle');
   const bilingualToggle = document.getElementById('bilingualToggle');
   const providerSelect = document.getElementById('providerSelect');
   const geminiSettings = document.getElementById('geminiSettings');
@@ -24,10 +32,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const toast = document.getElementById('toast');
 
   let selectedFontSize = 20;
+  let activeTabId = null;
 
   // 1. Load saved configuration
   const config = await chrome.storage.local.get([
     'enabled',
+    'autoTranslate',
     'bilingual',
     'provider',
     'geminiApiKey',
@@ -41,6 +51,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   ]);
 
   if (config.enabled !== undefined) enabledToggle.checked = config.enabled;
+  autoTranslateToggle.checked = config.autoTranslate === true; // Default false
   if (config.bilingual !== undefined) bilingualToggle.checked = config.bilingual;
   if (config.provider) providerSelect.value = config.provider;
   if (config.geminiApiKey) geminiApiKey.value = config.geminiApiKey;
@@ -101,6 +112,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     await chrome.storage.local.set({ enabled: enabledToggle.checked });
   });
 
+  autoTranslateToggle.addEventListener('change', async () => {
+    await chrome.storage.local.set({ autoTranslate: autoTranslateToggle.checked });
+  });
+
   bilingualToggle.addEventListener('change', async () => {
     await chrome.storage.local.set({ bilingual: bilingualToggle.checked });
   });
@@ -135,6 +150,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     await chrome.storage.local.set({
       enabled: enabledToggle.checked,
+      autoTranslate: autoTranslateToggle.checked,
       bilingual: bilingualToggle.checked,
       provider: provider,
       geminiApiKey: gKey,
@@ -150,7 +166,76 @@ document.addEventListener('DOMContentLoaded', async () => {
     showToast('تنظیمات با موفقیت ذخیره شد ✓');
   });
 
-  // 7. Test Connection Button
+  // 7. Active YouTube Tab Detection & Quick Action
+  async function checkActiveYouTubeTab() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || !tab.id || !tab.url || !tab.url.includes('youtube.com/watch')) {
+        videoActionCard.classList.add('hidden');
+        return;
+      }
+
+      activeTabId = tab.id;
+      videoActionCard.classList.remove('hidden');
+
+      // Request state from content script
+      chrome.tabs.sendMessage(activeTabId, { type: 'GET_VIDEO_TRANSLATION_STATE' }, (res) => {
+        if (chrome.runtime.lastError || !res) {
+          videoActionDesc.textContent = 'در ویدیوی یوتیوب، برای شروع ترجمه روی دکمه زیر کلیک کنید.';
+          return;
+        }
+
+        updateActionCardUI(res);
+      });
+    } catch (e) {
+      console.warn('Could not query active tab:', e);
+    }
+  }
+
+  function updateActionCardUI(state) {
+    if (state.isTranslating) {
+      videoStatusDot.className = 'video-status-dot loading';
+      videoActionDesc.textContent = 'هوش مصنوعی در حال ترجمه زیرنویس ویدیو است...';
+      startTranslateBtn.disabled = true;
+      startTranslateBtn.className = 'btn btn-action-translate';
+      startTranslateBtnText.textContent = 'در حال ترجمه هوشمند...';
+    } else if (state.hasSubtitles && state.isEnabled) {
+      videoStatusDot.className = 'video-status-dot active';
+      videoActionDesc.textContent = 'زیرنویس فارسی ترجمه شده و روی ویدیو در حال نمایش است.';
+      startTranslateBtn.disabled = false;
+      startTranslateBtn.className = 'btn btn-action-translate state-active';
+      startTranslateBtnText.textContent = '✓ زیرنویس فارسی فعال است (کلیک برای خاموش‌کردن)';
+    } else if (state.hasSubtitles && !state.isEnabled) {
+      videoStatusDot.className = 'video-status-dot';
+      videoActionDesc.textContent = 'زیرنویس فارسی ترجمه شده اما فعلاً پنهان است (زبان اصلی).';
+      startTranslateBtn.disabled = false;
+      startTranslateBtn.className = 'btn btn-action-translate';
+      startTranslateBtnText.textContent = '🌐 نمایش زیرنویس فارسی';
+    } else if (state.isCached) {
+      videoStatusDot.className = 'video-status-dot active';
+      videoActionDesc.textContent = 'ترجمه این ویدیو قبلاً ذخیره شده و بدون مصرف توکن آماده است.';
+      startTranslateBtn.disabled = false;
+      startTranslateBtn.className = 'btn btn-action-translate state-cached';
+      startTranslateBtnText.textContent = '⚡ بارگذاری ترجمه ذخیره‌شده';
+    } else {
+      videoStatusDot.className = 'video-status-dot';
+      videoActionDesc.textContent = 'ویدیو با زبان اصلی پخش می‌شود. برای شروع ترجمه کلیک کنید:';
+      startTranslateBtn.disabled = false;
+      startTranslateBtn.className = 'btn btn-action-translate';
+      startTranslateBtnText.textContent = '✨ شروع ترجمه هوشمند این ویدیو';
+    }
+  }
+
+  startTranslateBtn.addEventListener('click', () => {
+    if (!activeTabId) return;
+    chrome.tabs.sendMessage(activeTabId, { type: 'TRIGGER_TRANSLATION_CMD' }, () => {
+      setTimeout(checkActiveYouTubeTab, 300);
+    });
+  });
+
+  checkActiveYouTubeTab();
+
+  // 8. Test Connection Button
   const testBtn = document.getElementById('testBtn');
   if (testBtn) {
     testBtn.addEventListener('click', async () => {
@@ -209,7 +294,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // 8. Clear Cache Button
+  // 9. Clear Cache Button
   clearCacheBtn.addEventListener('click', async () => {
     const all = await chrome.storage.local.get(null);
     const keysToRemove = Object.keys(all).filter((k) => k.startsWith('yt_sub_'));

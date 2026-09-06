@@ -3,7 +3,11 @@
 (function () {
   let currentVideoId = null;
   let activeSubtitles = [];
+  let cachedSubtitles = null;
+  let latestRawTimedText = null;
   let isEnabled = true;
+  let autoTranslate = false;
+  let isTranslationRequested = false;
   let isBilingual = true;
   let fontSize = 20;
   let overlayEl = null;
@@ -18,6 +22,7 @@
   let captionObserver = null;
   let liveDebounceTimer = null;
   let lastObservedText = '';
+  let preparingTimeout = null;
   const realtimeTranslations = new Map();
 
   // 1. Inject page-script.js to read captions and intercept player traffic
@@ -41,17 +46,20 @@
     if (event.data.type === 'YT_FA_INTERCEPTED_TIMEDTEXT') {
       const rawText = event.data.rawText;
       if (rawText && rawText.trim().length > 0) {
-        handleInterceptedTimedText(rawText);
+        latestRawTimedText = rawText;
+        if (isTranslationRequested || autoTranslate) {
+          handleInterceptedTimedText(rawText);
+        }
       }
     }
 
     if (event.data.type === 'YT_FA_TIMEDTEXT_BASEURL') {
       const url = event.data.url;
-      if (url && !hasStartedTranslation && activeSubtitles.length === 0) {
+      if (url && (isTranslationRequested || autoTranslate) && !hasStartedTranslation && activeSubtitles.length === 0) {
         console.log('[YT-FA-Translator] Received timedtext baseUrl from page-script, fetching via background service worker...');
         chrome.runtime.sendMessage({ type: 'FETCH_TIMEDTEXT', url }).then((res) => {
           if (res && res.success && res.rawText && res.rawText.trim().length > 0) {
-            console.log('[YT-FA-Translator] Successfully fetched timedtext via background! Length:', res.rawText.length);
+            latestRawTimedText = res.rawText;
             handleInterceptedTimedText(res.rawText);
           }
         }).catch((err) => {
@@ -62,17 +70,40 @@
 
     if (event.data.type === 'YT_FA_PAGE_SCRIPT_READY') {
       console.log('[YT-FA-Translator] Page script confirmed ready.');
-      window.postMessage({ type: 'YT_FA_FORCE_ENABLE_CC' }, '*');
+      if (autoTranslate) {
+        window.postMessage({ type: 'YT_FA_START_TRANSLATION' }, '*');
+      }
     }
   });
 
-  // 3. Load user settings
+  // 3. Listen for commands from Popup or Background
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'GET_VIDEO_TRANSLATION_STATE') {
+      sendResponse({
+        videoId: getVideoId(),
+        isTranslating,
+        hasSubtitles: activeSubtitles.length > 0,
+        isCached: !!(cachedSubtitles && cachedSubtitles.length > 0),
+        isEnabled,
+        autoTranslate
+      });
+      return true;
+    }
+    if (message.type === 'TRIGGER_TRANSLATION_CMD') {
+      onTranslateBtnClick();
+      sendResponse({ success: true });
+      return true;
+    }
+  });
+
+  // 4. Load user settings
   async function loadSettings() {
     try {
-      const settings = await chrome.storage.local.get(['enabled', 'bilingual', 'fontSize']);
+      const settings = await chrome.storage.local.get(['enabled', 'bilingual', 'fontSize', 'autoTranslate']);
       isEnabled = settings.enabled !== false;
       isBilingual = settings.bilingual !== false;
       fontSize = settings.fontSize || 20;
+      autoTranslate = settings.autoTranslate === true;
       applyStyles();
     } catch (e) {
       console.warn('[YT-FA-Translator] Error loading settings:', e);
@@ -81,42 +112,43 @@
 
   function applyStyles() {
     const player = document.getElementById('movie_player') || document.querySelector('.html5-video-player');
+    const shouldShowPersian = isEnabled && (isTranslationRequested || isTranslating || activeSubtitles.length > 0);
+
     if (player) {
-      player.classList.toggle('yt-fa-hide-default-cc', isEnabled);
+      // ONLY hide YouTube's default CC if Persian subtitles are active and visible
+      player.classList.toggle('yt-fa-hide-default-cc', shouldShowPersian);
     }
 
     if (overlayEl) {
       overlayEl.style.setProperty('--yt-fa-font-size', `${fontSize}px`);
-      overlayEl.style.display = isEnabled ? 'flex' : 'none';
+      overlayEl.style.display = shouldShowPersian ? 'flex' : 'none';
     }
     if (subEnEl) {
       subEnEl.style.display = isBilingual ? 'block' : 'none';
     }
-    if (toggleBtnEl) {
-      toggleBtnEl.classList.toggle('active', isEnabled);
-      toggleBtnEl.title = isEnabled ? 'زیرنویس فارسی: فعال' : 'زیرنویس فارسی: غیرفعال';
-    }
+
+    updateTranslateButtonUI();
   }
 
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.enabled) isEnabled = changes.enabled.newValue;
     if (changes.bilingual) isBilingual = changes.bilingual.newValue;
     if (changes.fontSize) fontSize = changes.fontSize.newValue;
+    if (changes.autoTranslate) autoTranslate = changes.autoTranslate.newValue;
     applyStyles();
   });
 
-  // 4. Setup Custom Subtitle Overlay inside YouTube Player
+  // 5. Setup Custom Subtitle Overlay inside YouTube Player
   function ensureOverlay() {
     const player = document.getElementById('movie_player') || document.querySelector('.html5-video-player');
     if (!player) return false;
 
     videoEl = player.querySelector('video');
-    player.classList.toggle('yt-fa-hide-default-cc', isEnabled);
 
     if (!overlayEl || !player.contains(overlayEl)) {
       overlayEl = document.createElement('div');
       overlayEl.id = 'yt-fa-sub-overlay';
-      overlayEl.style.display = isEnabled ? 'flex' : 'none';
+      overlayEl.style.display = (isEnabled && (isTranslationRequested || isTranslating || activeSubtitles.length > 0)) ? 'flex' : 'none';
       overlayEl.style.setProperty('--yt-fa-font-size', `${fontSize}px`);
 
       // Subtitle Box
@@ -150,34 +182,154 @@
 
   let lastStatusState = null;
 
-  // 5. Inject Quick Toggle Button and Status Badge into YouTube Control Bar
+  // 6. Update Translate Button Appearance based on State
+  function updateTranslateButtonUI(state) {
+    if (!toggleBtnEl) return;
+
+    if (!state) {
+      if (isTranslating) {
+        state = 'loading';
+      } else if (activeSubtitles.length > 0) {
+        state = isEnabled ? 'active' : 'inactive';
+      } else if (cachedSubtitles && cachedSubtitles.length > 0) {
+        state = 'cached';
+      } else {
+        state = 'idle';
+      }
+    }
+
+    const iconEl = toggleBtnEl.querySelector('.yt-fa-btn-icon');
+    const labelEl = toggleBtnEl.querySelector('.yt-fa-btn-label');
+
+    toggleBtnEl.className = `ytp-button yt-fa-control-btn state-${state}`;
+
+    const sparkleIcon = `
+      <svg viewBox="0 0 24 24">
+        <path d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/>
+      </svg>
+    `;
+
+    if (state === 'loading') {
+      if (iconEl) iconEl.innerHTML = `<div class="yt-fa-spinner" style="width:13px;height:13px;border-width:2px;margin:0;"></div>`;
+      if (labelEl) labelEl.textContent = 'در حال ترجمه...';
+      toggleBtnEl.title = 'ترجمه هوشمند زیرنویس در حال پردازش است...';
+    } else if (state === 'active') {
+      if (iconEl) iconEl.innerHTML = sparkleIcon;
+      if (labelEl) labelEl.textContent = '✓ زیرنویس فارسی';
+      toggleBtnEl.title = 'زیرنویس فارسی فعال است. برای مشاهده زبان اصلی کلیک کنید.';
+    } else if (state === 'inactive') {
+      if (iconEl) iconEl.innerHTML = sparkleIcon;
+      if (labelEl) labelEl.textContent = '🌐 فارسی (خاموش)';
+      toggleBtnEl.title = 'زیرنویس فارسی غیرفعال است. برای نمایش مجدد کلیک کنید.';
+    } else if (state === 'cached') {
+      if (iconEl) iconEl.innerHTML = sparkleIcon;
+      if (labelEl) labelEl.textContent = '⚡ نمایش ترجمه';
+      toggleBtnEl.title = 'ترجمه فارسی این ویدیو در حافظه موجود است (بدون هزینه). برای نمایش کلیک کنید.';
+    } else {
+      if (iconEl) iconEl.innerHTML = sparkleIcon;
+      if (labelEl) labelEl.textContent = '✨ ترجمه هوشمند';
+      toggleBtnEl.title = 'شروع ترجمه هوشمند این ویدیو با هوش مصنوعی (کلیک کنید)';
+    }
+  }
+
+  // 7. Button Click Handler
+  async function onTranslateBtnClick() {
+    if (isTranslating) return;
+
+    // A. Subtitles already active in memory -> Toggle Persian overlay on/off
+    if (activeSubtitles.length > 0) {
+      isEnabled = !isEnabled;
+      await chrome.storage.local.set({ enabled: isEnabled });
+      applyStyles();
+      updateTranslateButtonUI(isEnabled ? 'active' : 'inactive');
+      return;
+    }
+
+    // B. Subtitles cached in storage -> Load instantly without LLM request!
+    if (cachedSubtitles && cachedSubtitles.length > 0) {
+      activeSubtitles = cachedSubtitles;
+      isEnabled = true;
+      isTranslationRequested = true;
+      await chrome.storage.local.set({ enabled: true });
+      applyStyles();
+      updateTranslateButtonUI('active');
+      setStatus('زیرنویس فارسی از حافظه بارگذاری شد ✓', false);
+      setTimeout(() => setStatus(null), 2500);
+      return;
+    }
+
+    // C. Not translated yet -> Start translation
+    startTranslationProcess();
+  }
+
+  // 8. Trigger Translation
+  async function startTranslationProcess() {
+    const videoId = getVideoId();
+    if (!videoId) return;
+
+    isTranslationRequested = true;
+    isEnabled = true;
+    applyStyles();
+    updateTranslateButtonUI('loading');
+    setStatus('در حال آماده‌سازی و دریافت زیرنویس...', true);
+
+    // Check cache first
+    const cacheRes = await chrome.runtime.sendMessage({ type: 'CHECK_CACHE', videoId });
+    if (cacheRes && cacheRes.cached && Array.isArray(cacheRes.items) && cacheRes.items.length > 0) {
+      console.log('[YT-FA-Translator] ⚡ Loaded from local cache:', cacheRes.items.length, 'lines.');
+      activeSubtitles = cacheRes.items;
+      cachedSubtitles = cacheRes.items;
+      setStatus(null);
+      applyStyles();
+      updateTranslateButtonUI('active');
+      onTimeUpdate();
+      return;
+    }
+
+    // If we already intercepted the timedtext
+    if (latestRawTimedText) {
+      handleInterceptedTimedText(latestRawTimedText);
+      return;
+    }
+
+    // Force player to load captions
+    window.postMessage({ type: 'YT_FA_START_TRANSLATION' }, '*');
+
+    clearTimeout(preparingTimeout);
+    preparingTimeout = setTimeout(() => {
+      if (!isTranslating && activeSubtitles.length === 0) {
+        console.log('[YT-FA-Translator] Timedtext not received. Ready for live capture if CC enabled.');
+        setStatus('زیرنویس پیش‌فرض یافت نشد. لطفاً CC یوتیوب را روشن کنید.', false, true);
+        updateTranslateButtonUI('idle');
+      }
+    }, 6000);
+  }
+
+  // 9. Inject Quick Translate Button and Status Badge into YouTube Control Bar
   function injectControlsElements() {
     const player = document.getElementById('movie_player') || document.querySelector('.html5-video-player');
     const rightControls = player?.querySelector('.ytp-right-controls') || document.querySelector('.ytp-right-controls');
     if (!rightControls) return;
 
-    // 1. Toggle Button
+    // 1. Translate / Toggle Button
     if (!toggleBtnEl || !rightControls.contains(toggleBtnEl)) {
       if (!toggleBtnEl) {
         toggleBtnEl = document.createElement('button');
         toggleBtnEl.id = 'yt-fa-toggle-btn';
-        toggleBtnEl.className = `ytp-button yt-fa-control-btn ${isEnabled ? 'active' : ''}`;
-        toggleBtnEl.title = isEnabled ? 'زیرنویس فارسی: فعال' : 'زیرنویس فارسی: غیرفعال';
-        toggleBtnEl.setAttribute('aria-label', 'ترجمه فارسی زیرنویس');
-
+        toggleBtnEl.setAttribute('type', 'button');
+        toggleBtnEl.setAttribute('aria-label', 'ترجمه هوشمند زیرنویس');
         toggleBtnEl.innerHTML = `
-          <svg viewBox="0 0 24 24">
-            <path d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/>
-          </svg>
+          <span class="yt-fa-btn-icon"></span>
+          <span class="yt-fa-btn-label">✨ ترجمه هوشمند</span>
         `;
 
-        toggleBtnEl.addEventListener('click', async () => {
-          isEnabled = !isEnabled;
-          await chrome.storage.local.set({ enabled: isEnabled });
-          applyStyles();
+        toggleBtnEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          onTranslateBtnClick();
         });
       }
       rightControls.insertBefore(toggleBtnEl, rightControls.firstChild);
+      updateTranslateButtonUI();
     }
 
     // 2. Status Badge placed directly before the toggle button
@@ -221,7 +373,7 @@
           e.stopPropagation();
           hasStartedTranslation = false;
           isTranslating = false;
-          window.postMessage({ type: 'YT_FA_FORCE_ENABLE_CC' }, '*');
+          startTranslationProcess();
         };
       }
     }
@@ -252,15 +404,21 @@
     );
 
     if (currentItem && (currentItem.fa || currentItem.text)) {
-      subFaEl.textContent = currentItem.fa || '...';
+      if (currentItem.fa) {
+        subFaEl.textContent = currentItem.fa;
+        subFaEl.style.opacity = '1';
+      } else if (isTranslating) {
+        subFaEl.textContent = '... در حال ترجمه';
+        subFaEl.style.opacity = '0.7';
+      } else {
+        subFaEl.textContent = '';
+      }
       subEnEl.textContent = currentItem.text || '';
       subBoxEl.style.display = 'inline-flex';
     } else {
       subBoxEl.style.display = 'none';
     }
   }
-
-  let preparingTimeout = null;
 
   function cleanCaptionText(raw) {
     if (!raw) return '';
@@ -278,7 +436,7 @@
     if (captionObserver) return;
 
     captionObserver = new MutationObserver(() => {
-      if (!isEnabled || activeSubtitles.length > 0) return;
+      if (!isEnabled || !isTranslationRequested || activeSubtitles.length > 0) return;
 
       const segments = player.querySelectorAll('.ytp-caption-segment');
       if (!segments || segments.length === 0) {
@@ -370,7 +528,7 @@
   // 8. Progressive Batch Translation
   async function handleInterceptedTimedText(rawText) {
     const videoId = getVideoId();
-    if (!videoId || hasStartedTranslation || activeSubtitles.length > 0) return;
+    if (!videoId || hasStartedTranslation || (activeSubtitles.length > 0 && activeSubtitles.some(s => s.fa))) return;
     hasStartedTranslation = true;
     clearTimeout(preparingTimeout);
 
@@ -379,7 +537,11 @@
     if (cacheRes && cacheRes.cached && Array.isArray(cacheRes.items) && cacheRes.items.length > 0) {
       console.log('[YT-FA-Translator] ⚡ Loaded from local cache:', cacheRes.items.length, 'lines.');
       activeSubtitles = cacheRes.items;
+      cachedSubtitles = cacheRes.items;
       setStatus(null);
+      applyStyles();
+      updateTranslateButtonUI('active');
+      onTimeUpdate();
       return;
     }
 
@@ -389,58 +551,86 @@
       return;
     }
 
+    // Immediately populate activeSubtitles with English text & timings
+    // so synced subtitles appear on screen RIGHT AWAY!
+    activeSubtitles = parsedItems.map((item) => ({
+      ...item,
+      fa: ''
+    }));
+    isTranslating = true;
+    isTranslationRequested = true;
+    applyStyles();
+    onTimeUpdate();
+    updateTranslateButtonUI('loading');
+
     console.log(
-      `%c[YT-FA-Translator] 🎬 Intercepted full timedtext: ${parsedItems.length} lines. Starting progressive batch translation...`,
+      `%c[YT-FA-Translator] 🎬 Intercepted full timedtext: ${parsedItems.length} lines. Starting real-time prioritized batch translation...`,
       'color: #2563eb; font-weight: bold;'
     );
-    isTranslating = true;
 
-    const CHUNK_SIZE = 35;
-    const totalLines = parsedItems.length;
-    let completedLines = 0;
+    const CHUNK_SIZE = 25;
+    const allChunks = [];
+    for (let i = 0; i < parsedItems.length; i += CHUNK_SIZE) {
+      allChunks.push({
+        index: allChunks.length,
+        items: parsedItems.slice(i, i + CHUNK_SIZE)
+      });
+    }
+
+    const totalChunks = allChunks.length;
     const translationMap = new Map();
 
-    for (let i = 0; i < totalLines; i += CHUNK_SIZE) {
+    // Priority: Find which chunk corresponds to the user's current playback position!
+    const currTime = videoEl ? videoEl.currentTime : 0;
+    let currentChunkIdx = allChunks.findIndex((c) =>
+      c.items.some((item) => currTime >= item.start && currTime <= item.end)
+    );
+    if (currentChunkIdx === -1) {
+      currentChunkIdx = allChunks.findIndex((c) =>
+        c.items.length > 0 && c.items[c.items.length - 1].end >= currTime
+      );
+    }
+    if (currentChunkIdx === -1) currentChunkIdx = 0;
+
+    // Put current and upcoming scenes FIRST, then previous scenes
+    const prioritizedChunks = [];
+    for (let i = currentChunkIdx; i < totalChunks; i++) {
+      prioritizedChunks.push(allChunks[i]);
+    }
+    for (let i = 0; i < currentChunkIdx; i++) {
+      prioritizedChunks.push(allChunks[i]);
+    }
+
+    let completedChunks = 0;
+
+    for (const chunkObj of prioritizedChunks) {
       if (videoId !== getVideoId()) break;
 
-      const chunk = parsedItems.slice(i, i + CHUNK_SIZE);
-      const chunkNum = Math.floor(i / CHUNK_SIZE) + 1;
-      const totalChunks = Math.ceil(totalLines / CHUNK_SIZE);
-
-      setStatus(`در حال ترجمه هوشمند: دسته ${chunkNum} از ${totalChunks} (${Math.min(i + CHUNK_SIZE, totalLines)} از ${totalLines} سطر)...`, true);
-
-      console.log(
-        `%c[YT-FA-Translator] 🚀 [LLM Batch Request Sent] Chunk ${chunkNum}/${totalChunks} (${chunk.length} items):\n  Lines: ${i + 1} to ${Math.min(i + CHUNK_SIZE, totalLines)}`,
-        'color: #2563eb; font-weight: bold;',
-        chunk.map((c) => `[#${c.id}] ${c.text}`)
-      );
+      completedChunks++;
+      setStatus(`در حال ترجمه هوشمند: دسته ${completedChunks} از ${totalChunks}...`, true);
 
       try {
         const res = await chrome.runtime.sendMessage({
           type: 'TRANSLATE_CHUNK',
-          chunkItems: chunk
+          chunkItems: chunkObj.items
         });
 
         if (res && res.success && Array.isArray(res.translations)) {
-          console.log(
-            `%c[YT-FA-Translator] 📥 [LLM Batch Response Received] Chunk ${chunkNum}/${totalChunks} succeeded! (${res.translations.length} items) via ${res.provider || 'AI'} (${res.model || ''})`,
-            'color: #059669; font-weight: bold;',
-            res.translations
-          );
-
           res.translations.forEach((t) => {
             if (t && t.id !== undefined && t.fa) {
               translationMap.set(t.id, t.fa);
             }
           });
 
-          // Immediately populate activeSubtitles with translated items so playback syncs right away!
+          // Immediately update activeSubtitles with translated lines
           activeSubtitles = parsedItems.map((item) => ({
             ...item,
             fa: translationMap.get(item.id) || ''
           }));
 
-          completedLines += chunk.length;
+          // Live update the subtitle overlay on screen!
+          applyStyles();
+          onTimeUpdate();
         } else {
           console.error(
             `%c[YT-FA-Translator] ❌ [LLM Batch Error]`,
@@ -449,6 +639,7 @@
           );
           setStatus(`خطا در ترجمه: ${res?.error || 'خطای اتصال به هوش مصنوعی'}`, false, true);
           isTranslating = false;
+          updateTranslateButtonUI('idle');
           return;
         }
       } catch (err) {
@@ -459,6 +650,7 @@
         );
         setStatus(`خطا: ${err.message}`, false, true);
         isTranslating = false;
+        updateTranslateButtonUI('idle');
         return;
       }
     }
@@ -472,6 +664,10 @@
         videoId: videoId,
         items: activeSubtitles
       });
+      cachedSubtitles = activeSubtitles;
+      updateTranslateButtonUI('active');
+      applyStyles();
+      onTimeUpdate();
     }
     isTranslating = false;
   }
@@ -560,13 +756,18 @@
   }
 
   // 10. Navigation & Initialization
-  function onVideoChange() {
+  async function onVideoChange() {
     const newVideoId = getVideoId();
     if (!newVideoId) {
       currentVideoId = null;
       hasStartedTranslation = false;
+      isTranslationRequested = false;
+      isTranslating = false;
       activeSubtitles = [];
+      cachedSubtitles = null;
+      latestRawTimedText = null;
       clearTimeout(preparingTimeout);
+      setStatus(null);
       if (overlayEl) overlayEl.style.display = 'none';
       return;
     }
@@ -574,28 +775,42 @@
     if (newVideoId !== currentVideoId) {
       currentVideoId = newVideoId;
       hasStartedTranslation = false;
-      activeSubtitles = [];
+      isTranslationRequested = false;
       isTranslating = false;
+      activeSubtitles = [];
+      cachedSubtitles = null;
+      latestRawTimedText = null;
       realtimeTranslations.clear();
       lastObservedText = '';
       if (subBoxEl) subBoxEl.style.display = 'none';
 
       clearTimeout(preparingTimeout);
-      setStatus('در حال آماده‌سازی زیرنویس فارسی...', true);
-
-      // Auto-clear preparation indicator after 3.5s so it never stays stuck indefinitely!
-      preparingTimeout = setTimeout(() => {
-        if (!isTranslating && activeSubtitles.length === 0) {
-          console.log('[YT-FA-Translator] Subtitle preparation timed out. Ready for live captions.');
-          setStatus(null);
-        }
-      }, 3500);
+      setStatus(null);
 
       ensureOverlay();
       applyStyles();
 
-      // Trigger player captions
-      window.postMessage({ type: 'YT_FA_FORCE_ENABLE_CC' }, '*');
+      // Check cache first!
+      const cacheRes = await chrome.runtime.sendMessage({ type: 'CHECK_CACHE', videoId: newVideoId });
+      if (cacheRes && cacheRes.cached && Array.isArray(cacheRes.items) && cacheRes.items.length > 0) {
+        cachedSubtitles = cacheRes.items;
+        if (autoTranslate) {
+          activeSubtitles = cachedSubtitles;
+          isTranslationRequested = true;
+          applyStyles();
+          updateTranslateButtonUI('active');
+        } else {
+          updateTranslateButtonUI('cached');
+        }
+        return;
+      }
+
+      // If auto-translate is enabled, automatically start
+      if (autoTranslate) {
+        startTranslationProcess();
+      } else {
+        updateTranslateButtonUI('idle');
+      }
     }
   }
 
@@ -620,8 +835,8 @@
     const vid = getVideoId();
     if (vid) {
       ensureOverlay();
-      if (activeSubtitles.length === 0 && !isTranslating && !hasStartedTranslation) {
-        window.postMessage({ type: 'YT_FA_FORCE_ENABLE_CC' }, '*');
+      if (activeSubtitles.length === 0 && !isTranslating && !hasStartedTranslation && (autoTranslate || isTranslationRequested)) {
+        window.postMessage({ type: 'YT_FA_START_TRANSLATION' }, '*');
       }
     }
   }, 4000);
