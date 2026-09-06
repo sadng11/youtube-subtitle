@@ -119,12 +119,6 @@
       overlayEl.style.display = isEnabled ? 'flex' : 'none';
       overlayEl.style.setProperty('--yt-fa-font-size', `${fontSize}px`);
 
-      // Status Badge
-      statusBadgeEl = document.createElement('div');
-      statusBadgeEl.className = 'yt-fa-status-badge';
-      statusBadgeEl.style.display = 'none';
-      overlayEl.appendChild(statusBadgeEl);
-
       // Subtitle Box
       subBoxEl = document.createElement('div');
       subBoxEl.className = 'yt-fa-sub-box';
@@ -149,38 +143,60 @@
       videoEl._hasYtFaListener = true;
     }
 
-    injectControlsButton();
+    injectControlsElements();
     setupLiveCaptionObserver(player);
     return true;
   }
 
-  // 5. Inject Quick Toggle Button into YouTube Control Bar
-  function injectControlsButton() {
-    const rightControls = document.querySelector('.ytp-right-controls');
-    if (!rightControls || document.getElementById('yt-fa-toggle-btn')) return;
+  let lastStatusState = null;
 
-    toggleBtnEl = document.createElement('button');
-    toggleBtnEl.id = 'yt-fa-toggle-btn';
-    toggleBtnEl.className = `ytp-button yt-fa-control-btn ${isEnabled ? 'active' : ''}`;
-    toggleBtnEl.title = isEnabled ? 'زیرنویس فارسی: فعال' : 'زیرنویس فارسی: غیرفعال';
-    toggleBtnEl.setAttribute('aria-label', 'ترجمه فارسی زیرنویس');
+  // 5. Inject Quick Toggle Button and Status Badge into YouTube Control Bar
+  function injectControlsElements() {
+    const player = document.getElementById('movie_player') || document.querySelector('.html5-video-player');
+    const rightControls = player?.querySelector('.ytp-right-controls') || document.querySelector('.ytp-right-controls');
+    if (!rightControls) return;
 
-    toggleBtnEl.innerHTML = `
-      <svg viewBox="0 0 24 24">
-        <path d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/>
-      </svg>
-    `;
+    // 1. Toggle Button
+    if (!toggleBtnEl || !rightControls.contains(toggleBtnEl)) {
+      if (!toggleBtnEl) {
+        toggleBtnEl = document.createElement('button');
+        toggleBtnEl.id = 'yt-fa-toggle-btn';
+        toggleBtnEl.className = `ytp-button yt-fa-control-btn ${isEnabled ? 'active' : ''}`;
+        toggleBtnEl.title = isEnabled ? 'زیرنویس فارسی: فعال' : 'زیرنویس فارسی: غیرفعال';
+        toggleBtnEl.setAttribute('aria-label', 'ترجمه فارسی زیرنویس');
 
-    toggleBtnEl.addEventListener('click', async () => {
-      isEnabled = !isEnabled;
-      await chrome.storage.local.set({ enabled: isEnabled });
-      applyStyles();
-    });
+        toggleBtnEl.innerHTML = `
+          <svg viewBox="0 0 24 24">
+            <path d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/>
+          </svg>
+        `;
 
-    rightControls.insertBefore(toggleBtnEl, rightControls.firstChild);
+        toggleBtnEl.addEventListener('click', async () => {
+          isEnabled = !isEnabled;
+          await chrome.storage.local.set({ enabled: isEnabled });
+          applyStyles();
+        });
+      }
+      rightControls.insertBefore(toggleBtnEl, rightControls.firstChild);
+    }
+
+    // 2. Status Badge placed directly before the toggle button
+    if (!statusBadgeEl || !rightControls.contains(statusBadgeEl)) {
+      if (!statusBadgeEl) {
+        statusBadgeEl = document.createElement('div');
+        statusBadgeEl.id = 'yt-fa-status-badge';
+        statusBadgeEl.className = 'yt-fa-status-badge';
+        statusBadgeEl.style.display = 'none';
+      }
+      rightControls.insertBefore(statusBadgeEl, toggleBtnEl);
+    }
+
+    if (lastStatusState) {
+      applyStatusUI(lastStatusState.text, lastStatusState.showSpinner, lastStatusState.allowRetry);
+    }
   }
 
-  function setStatus(text, showSpinner = true, allowRetry = false) {
+  function applyStatusUI(text, showSpinner = true, allowRetry = false) {
     if (!statusBadgeEl) return;
     if (!text) {
       statusBadgeEl.style.display = 'none';
@@ -188,14 +204,15 @@
     }
     let html = '';
     if (showSpinner) {
-      html = `<div class="yt-fa-spinner"></div><span>${text}</span>`;
+      html = `<div class="yt-fa-spinner"></div><span class="yt-fa-status-text">${text}</span>`;
     } else if (allowRetry) {
-      html = `<span>${text}</span> <button class="yt-fa-retry-btn" style="background:#ef4444;color:#fff;border:none;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px;margin-right:6px;">تلاش مجدد</button>`;
+      html = `<span class="yt-fa-status-text">${text}</span> <button class="yt-fa-retry-btn">تلاش مجدد</button>`;
     } else {
-      html = `<span>${text}</span>`;
+      html = `<span class="yt-fa-status-text">${text}</span>`;
     }
     statusBadgeEl.innerHTML = html;
-    statusBadgeEl.style.display = 'flex';
+    statusBadgeEl.title = text;
+    statusBadgeEl.style.display = 'inline-flex';
 
     if (allowRetry) {
       const retryBtn = statusBadgeEl.querySelector('.yt-fa-retry-btn');
@@ -208,6 +225,19 @@
         };
       }
     }
+  }
+
+  function setStatus(text, showSpinner = true, allowRetry = false) {
+    if (!text) {
+      lastStatusState = null;
+      if (statusBadgeEl) statusBadgeEl.style.display = 'none';
+      return;
+    }
+    lastStatusState = { text, showSpinner, allowRetry };
+    if (!statusBadgeEl || !document.contains(statusBadgeEl)) {
+      injectControlsElements();
+    }
+    applyStatusUI(text, showSpinner, allowRetry);
   }
 
   // 6. Handle Video Subtitles on Time Update (Synced batch mode)
