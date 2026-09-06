@@ -159,6 +159,8 @@ async function checkCache(videoId) {
 async function saveToCache(videoId, items) {
   if (!videoId || !items) return;
   const key = `yt_sub_${videoId}`;
+  const translatedCount = Array.isArray(items) ? items.filter((s) => s.fa && s.fa.trim()).length : 0;
+  console.log(`[YT-FA-Translator SW] 💾 Saving cache for ${videoId}: ${translatedCount}/${items.length} lines translated.`);
   await chrome.storage.local.set({ [key]: items });
 }
 

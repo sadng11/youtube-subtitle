@@ -220,7 +220,7 @@
         state = 'loading';
       } else if (activeSubtitles.length > 0) {
         state = isEnabled ? 'active' : 'inactive';
-      } else if (cachedSubtitles && cachedSubtitles.length > 0) {
+      } else if (cachedSubtitles && cachedSubtitles.length > 0 && cachedSubtitles.every((s) => s.fa && s.fa.trim().length > 0)) {
         state = 'cached';
       } else {
         state = 'idle';
@@ -291,27 +291,33 @@
 
     // A. Subtitles already active in memory -> Toggle Persian overlay on/off
     if (activeSubtitles.length > 0) {
-      isEnabled = !isEnabled;
-      await chrome.storage.local.set({ enabled: isEnabled });
-      applyStyles();
-      updateTranslateButtonUI(isEnabled ? 'active' : 'inactive');
-      return;
+      const isFully = activeSubtitles.every((s) => s.fa && s.fa.trim().length > 0);
+      if (isFully) {
+        isEnabled = !isEnabled;
+        await chrome.storage.local.set({ enabled: isEnabled });
+        applyStyles();
+        updateTranslateButtonUI(isEnabled ? 'active' : 'inactive');
+        return;
+      }
     }
 
-    // B. Subtitles cached in storage -> Load instantly without LLM request!
+    // B. Subtitles cached in storage -> Load instantly without LLM request if fully cached!
     if (cachedSubtitles && cachedSubtitles.length > 0) {
-      activeSubtitles = cachedSubtitles;
-      isEnabled = true;
-      isTranslationRequested = true;
-      await chrome.storage.local.set({ enabled: true });
-      applyStyles();
-      updateTranslateButtonUI('active');
-      setStatus('زیرنویس فارسی از حافظه بارگذاری شد ✓', false);
-      setTimeout(() => setStatus(null), 2500);
-      return;
+      const isFully = cachedSubtitles.every((s) => s.fa && s.fa.trim().length > 0);
+      if (isFully) {
+        activeSubtitles = cachedSubtitles;
+        isEnabled = true;
+        isTranslationRequested = true;
+        await chrome.storage.local.set({ enabled: true });
+        applyStyles();
+        updateTranslateButtonUI('active');
+        setStatus('زیرنویس فارسی از حافظه بارگذاری شد ✓', false);
+        setTimeout(() => setStatus(null), 2500);
+        return;
+      }
     }
 
-    // C. Not translated yet -> Start translation
+    // C. Not translated yet or partially cached -> Start/Resume translation
     startTranslationProcess();
   }
 
@@ -329,14 +335,24 @@
     // Check cache first
     const cacheRes = await chrome.runtime.sendMessage({ type: 'CHECK_CACHE', videoId });
     if (cacheRes && cacheRes.cached && Array.isArray(cacheRes.items) && cacheRes.items.length > 0) {
-      console.log('[YT-FA-Translator] ⚡ Loaded from local cache:', cacheRes.items.length, 'lines.');
-      activeSubtitles = cacheRes.items;
-      cachedSubtitles = cacheRes.items;
-      setStatus(null);
-      applyStyles();
-      updateTranslateButtonUI('active');
-      onTimeUpdate();
-      return;
+      const isFully = cacheRes.items.every((s) => s.fa && s.fa.trim().length > 0);
+      if (isFully) {
+        console.log('[YT-FA-Translator] ⚡ Loaded full translation from local cache:', cacheRes.items.length, 'lines.');
+        activeSubtitles = cacheRes.items;
+        cachedSubtitles = cacheRes.items;
+        setStatus(null);
+        applyStyles();
+        updateTranslateButtonUI('active');
+        onTimeUpdate();
+        return;
+      } else {
+        const translatedCount = cacheRes.items.filter((s) => s.fa && s.fa.trim()).length;
+        console.log(`[YT-FA-Translator] ⚡ Found partial cache: ${translatedCount}/${cacheRes.items.length} lines. Resuming translation...`);
+        cachedSubtitles = cacheRes.items;
+        activeSubtitles = cacheRes.items;
+        applyStyles();
+        onTimeUpdate();
+      }
     }
 
     // If we already intercepted the timedtext
@@ -350,7 +366,7 @@
 
     clearTimeout(preparingTimeout);
     preparingTimeout = setTimeout(() => {
-      if (!isTranslating && activeSubtitles.length === 0) {
+      if (!isTranslating && (!activeSubtitles || activeSubtitles.length === 0 || !activeSubtitles.some((s) => s.fa))) {
         console.log('[YT-FA-Translator] Timedtext not received. Ready for live capture if CC enabled.');
         setStatus('زیرنویس پیش‌فرض یافت نشد. لطفاً CC یوتیوب را روشن کنید.', false, true);
         updateTranslateButtonUI('idle');
@@ -581,7 +597,7 @@
   // 8. Progressive Batch Translation
   async function handleInterceptedTimedText(rawText) {
     const videoId = getVideoId();
-    if (!videoId || hasStartedTranslation || (activeSubtitles.length > 0 && activeSubtitles.some(s => s.fa))) return;
+    if (!videoId || hasStartedTranslation || (activeSubtitles.length > 0 && activeSubtitles.every((s) => s.fa && s.fa.trim()))) return;
     hasStartedTranslation = true;
     clearTimeout(preparingTimeout);
     activeTranslationRunId++;
@@ -589,10 +605,13 @@
 
     // Check Cache first
     const cacheRes = await chrome.runtime.sendMessage({ type: 'CHECK_CACHE', videoId });
-    if (cacheRes && cacheRes.cached && Array.isArray(cacheRes.items) && cacheRes.items.length > 0) {
-      console.log('[YT-FA-Translator] ⚡ Loaded from local cache:', cacheRes.items.length, 'lines.');
-      activeSubtitles = cacheRes.items;
-      cachedSubtitles = cacheRes.items;
+    const cachedItems = (cacheRes && cacheRes.cached && Array.isArray(cacheRes.items)) ? cacheRes.items : (cachedSubtitles || []);
+    const isFullyCached = cachedItems.length > 0 && cachedItems.every((s) => s.fa && s.fa.trim().length > 0);
+
+    if (isFullyCached) {
+      console.log('[YT-FA-Translator] ⚡ Loaded full translation from local cache:', cachedItems.length, 'lines.');
+      activeSubtitles = cachedItems;
+      cachedSubtitles = cachedItems;
       setStatus(null);
       applyStyles();
       updateTranslateButtonUI('active');
@@ -606,11 +625,18 @@
       return;
     }
 
-    // Immediately populate activeSubtitles with English text & timings
-    // so synced subtitles appear on screen RIGHT AWAY!
+    // Populate translationMap with already-cached lines
+    const translationMap = new Map();
+    cachedItems.forEach((it) => {
+      if (it.fa && it.fa.trim()) {
+        translationMap.set(it.id, it.fa);
+      }
+    });
+
+    // Immediately populate activeSubtitles with English text & timings (and any previously translated Persian lines!)
     activeSubtitles = parsedItems.map((item) => ({
       ...item,
-      fa: ''
+      fa: translationMap.get(item.id) || ''
     }));
     isTranslating = true;
     isTranslationRequested = true;
@@ -619,7 +645,7 @@
     updateTranslateButtonUI('loading');
 
     console.log(
-      `%c[YT-FA-Translator] 🎬 Intercepted full timedtext: ${parsedItems.length} lines. Starting real-time prioritized batch translation...`,
+      `%c[YT-FA-Translator] 🎬 Intercepted full timedtext: ${parsedItems.length} lines (${translationMap.size} already translated). Starting prioritized batch translation...`,
       'color: #2563eb; font-weight: bold;'
     );
 
@@ -632,16 +658,36 @@
       });
     }
 
-    const totalChunks = allChunks.length;
-    const translationMap = new Map();
+    // Only process chunks that still have untranslated lines
+    const pendingChunks = allChunks.filter((c) =>
+      c.items.some((item) => !translationMap.get(item.id))
+    );
 
-    // Priority: Find which chunk corresponds to the user's current playback position!
+    if (pendingChunks.length === 0) {
+      console.log('[YT-FA-Translator] ⚡ All chunks already translated!');
+      setStatus('ترجمه زیرنویس کامل شد ✓', false);
+      setTimeout(() => setStatus(null), 3000);
+      cachedSubtitles = activeSubtitles;
+      chrome.runtime.sendMessage({
+        type: 'SAVE_FULL_CACHE',
+        videoId: videoId,
+        items: activeSubtitles
+      }).catch(() => {});
+      updateTranslateButtonUI('active');
+      isTranslating = false;
+      return;
+    }
+
+    const totalChunks = allChunks.length;
+    let completedChunks = totalChunks - pendingChunks.length;
+
+    // Priority: Find which pending chunk corresponds to user's current playback position
     const currTime = videoEl ? videoEl.currentTime : 0;
-    let currentChunkIdx = allChunks.findIndex((c) =>
+    let currentChunkIdx = pendingChunks.findIndex((c) =>
       c.items.some((item) => currTime >= item.start && currTime <= item.end)
     );
     if (currentChunkIdx === -1) {
-      currentChunkIdx = allChunks.findIndex((c) =>
+      currentChunkIdx = pendingChunks.findIndex((c) =>
         c.items.length > 0 && c.items[c.items.length - 1].end >= currTime
       );
     }
@@ -649,14 +695,12 @@
 
     // Put current and upcoming scenes FIRST, then previous scenes
     const prioritizedChunks = [];
-    for (let i = currentChunkIdx; i < totalChunks; i++) {
-      prioritizedChunks.push(allChunks[i]);
+    for (let i = currentChunkIdx; i < pendingChunks.length; i++) {
+      prioritizedChunks.push(pendingChunks[i]);
     }
     for (let i = 0; i < currentChunkIdx; i++) {
-      prioritizedChunks.push(allChunks[i]);
+      prioritizedChunks.push(pendingChunks[i]);
     }
-
-    let completedChunks = 0;
 
     for (const chunkObj of prioritizedChunks) {
       if (!isTranslating || !isTranslationRequested || videoId !== getVideoId() || currentRunId !== activeTranslationRunId) {
@@ -667,11 +711,15 @@
       completedChunks++;
       setStatus(`در حال ترجمه هوشمند: دسته ${completedChunks} از ${totalChunks}...`, true);
 
+      // Only send items that are not yet translated
+      const itemsToSend = chunkObj.items.filter((item) => !translationMap.get(item.id));
+      if (itemsToSend.length === 0) continue;
+
       try {
         const res = await chrome.runtime.sendMessage({
           type: 'TRANSLATE_CHUNK',
           videoId: videoId,
-          chunkItems: chunkObj.items
+          chunkItems: itemsToSend
         });
 
         if (!isTranslating || !isTranslationRequested || videoId !== getVideoId() || currentRunId !== activeTranslationRunId || res?.cancelled) {
@@ -695,6 +743,13 @@
           // Live update the subtitle overlay on screen!
           applyStyles();
           onTimeUpdate();
+
+          // PROGRESSIVE CACHE: Save to storage right after each chunk completes!
+          chrome.runtime.sendMessage({
+            type: 'SAVE_FULL_CACHE',
+            videoId: videoId,
+            items: activeSubtitles
+          }).catch(() => {});
         } else {
           if (res?.cancelled) {
             console.log('[YT-FA-Translator] 🛑 Translation chunk was cancelled by backend.');
@@ -734,7 +789,7 @@
         type: 'SAVE_FULL_CACHE',
         videoId: videoId,
         items: activeSubtitles
-      });
+      }).catch(() => {});
       cachedSubtitles = activeSubtitles;
       updateTranslateButtonUI('active');
       applyStyles();
@@ -873,13 +928,18 @@
       const cacheRes = await chrome.runtime.sendMessage({ type: 'CHECK_CACHE', videoId: newVideoId });
       if (cacheRes && cacheRes.cached && Array.isArray(cacheRes.items) && cacheRes.items.length > 0) {
         cachedSubtitles = cacheRes.items;
+        const isFullyCached = cacheRes.items.every((it) => it.fa && it.fa.trim().length > 0);
         if (autoTranslate) {
           activeSubtitles = cachedSubtitles;
           isTranslationRequested = true;
           applyStyles();
-          updateTranslateButtonUI('active');
+          if (isFullyCached) {
+            updateTranslateButtonUI('active');
+          } else {
+            startTranslationProcess();
+          }
         } else {
-          updateTranslateButtonUI('cached');
+          updateTranslateButtonUI(isFullyCached ? 'cached' : 'idle');
         }
         return;
       }
