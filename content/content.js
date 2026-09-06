@@ -210,24 +210,39 @@
     `;
 
     if (state === 'loading') {
-      if (iconEl) iconEl.innerHTML = `<div class="yt-fa-spinner" style="width:13px;height:13px;border-width:2px;margin:0;"></div>`;
+      if (iconEl) {
+        iconEl.style.display = '';
+        iconEl.innerHTML = `<div class="yt-fa-spinner" style="width:13px;height:13px;border-width:2px;margin:0;"></div>`;
+      }
       if (labelEl) labelEl.textContent = 'در حال ترجمه...';
       toggleBtnEl.title = 'ترجمه هوشمند زیرنویس در حال پردازش است...';
     } else if (state === 'active') {
-      if (iconEl) iconEl.innerHTML = sparkleIcon;
+      if (iconEl) {
+        iconEl.style.display = '';
+        iconEl.innerHTML = sparkleIcon;
+      }
       if (labelEl) labelEl.textContent = '✓ زیرنویس فارسی';
       toggleBtnEl.title = 'زیرنویس فارسی فعال است. برای مشاهده زبان اصلی کلیک کنید.';
     } else if (state === 'inactive') {
-      if (iconEl) iconEl.innerHTML = sparkleIcon;
+      if (iconEl) {
+        iconEl.style.display = '';
+        iconEl.innerHTML = sparkleIcon;
+      }
       if (labelEl) labelEl.textContent = '🌐 فارسی (خاموش)';
       toggleBtnEl.title = 'زیرنویس فارسی غیرفعال است. برای نمایش مجدد کلیک کنید.';
     } else if (state === 'cached') {
-      if (iconEl) iconEl.innerHTML = sparkleIcon;
+      if (iconEl) {
+        iconEl.style.display = '';
+        iconEl.innerHTML = sparkleIcon;
+      }
       if (labelEl) labelEl.textContent = '⚡ نمایش ترجمه';
       toggleBtnEl.title = 'ترجمه فارسی این ویدیو در حافظه موجود است (بدون هزینه). برای نمایش کلیک کنید.';
     } else {
-      if (iconEl) iconEl.innerHTML = sparkleIcon;
-      if (labelEl) labelEl.textContent = '✨ ترجمه هوشمند';
+      if (iconEl) {
+        iconEl.style.display = 'none';
+        iconEl.innerHTML = '';
+      }
+      if (labelEl) labelEl.textContent = '✨';
       toggleBtnEl.title = 'شروع ترجمه هوشمند این ویدیو با هوش مصنوعی (کلیک کنید)';
     }
   }
@@ -320,7 +335,7 @@
         toggleBtnEl.setAttribute('aria-label', 'ترجمه هوشمند زیرنویس');
         toggleBtnEl.innerHTML = `
           <span class="yt-fa-btn-icon"></span>
-          <span class="yt-fa-btn-label">✨ ترجمه هوشمند</span>
+          <span class="yt-fa-btn-label">✨</span>
         `;
 
         toggleBtnEl.addEventListener('click', (e) => {

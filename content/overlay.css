@@ -209,6 +209,10 @@
   flex-shrink: 0;
 }
 
+.yt-fa-control-btn .yt-fa-btn-icon:empty {
+  display: none;
+}
+
 .yt-fa-control-btn .yt-fa-btn-icon svg {
   width: 18px;
   height: 18px;
@@ -222,6 +226,8 @@
 
 /* State: Idle / Ready to start translation */
 .yt-fa-control-btn.state-idle {
+  padding: 0 10px;
+  font-size: 14px;
   background: linear-gradient(135deg, rgba(37, 99, 235, 0.5), rgba(79, 70, 229, 0.5));
   border-color: rgba(147, 197, 253, 0.5);
   color: #ffffff;
