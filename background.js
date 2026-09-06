@@ -1,13 +1,76 @@
 // Background Service Worker for YouTube Persian Subtitle Translator
 
+// Active translation controllers keyed by tabId: tabId -> { videoId, controller: AbortController, cancelled: boolean }
+const activeTranslationsByTab = new Map();
+
+function cancelTabTranslation(tabId, reason = 'unknown') {
+  if (!tabId) return;
+  const active = activeTranslationsByTab.get(tabId);
+  if (active) {
+    console.log(`[YT-FA-Translator SW] 🛑 Cancelling translation for tab ${tabId} (video: ${active.videoId || 'unknown'}). Reason: ${reason}`);
+    active.cancelled = true;
+    if (active.controller) {
+      try {
+        active.controller.abort();
+      } catch (_) {}
+    }
+    activeTranslationsByTab.delete(tabId);
+  }
+}
+
+// 1. Listen for tab closed -> Immediately abort translation
+chrome.tabs.onRemoved.addListener((tabId) => {
+  cancelTabTranslation(tabId, 'Tab closed');
+});
+
+// 2. Listen for tab navigation / URL change -> Abort previous video translation
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.url) {
+    cancelTabTranslation(tabId, 'Tab navigated to ' + changeInfo.url);
+  }
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'TRANSLATE_CHUNK') {
-    translateChunk(message)
-      .then((result) => sendResponse({ success: true, ...result }))
+    const tabId = sender.tab?.id;
+    const videoId = message.videoId;
+
+    if (tabId && activeTranslationsByTab.get(tabId)?.cancelled) {
+      console.log(`[YT-FA-Translator SW] 🛑 Rejecting chunk request for cancelled tab ${tabId}`);
+      sendResponse({ success: false, cancelled: true, error: 'ترجمه لغو شده است.' });
+      return true;
+    }
+
+    const controller = new AbortController();
+    if (tabId) {
+      activeTranslationsByTab.set(tabId, { videoId, controller, cancelled: false });
+    }
+
+    translateChunk(message, controller.signal)
+      .then((result) => {
+        if (tabId && activeTranslationsByTab.get(tabId)?.cancelled) {
+          sendResponse({ success: false, cancelled: true, error: 'ترجمه لغو شده است.' });
+        } else {
+          sendResponse({ success: true, ...result });
+        }
+      })
       .catch((error) => {
-        console.error('[YT-FA-Translator SW] ❌ Chunk translation error:', error);
-        sendResponse({ success: false, error: error.message });
+        if (controller.signal.aborted || error.name === 'AbortError') {
+          console.log(`[YT-FA-Translator SW] 🛑 Translation chunk aborted for tab ${tabId}`);
+          sendResponse({ success: false, cancelled: true, error: 'درخواست لغو شد.' });
+        } else {
+          console.error('[YT-FA-Translator SW] ❌ Chunk translation error:', error);
+          sendResponse({ success: false, error: error.message });
+        }
       });
+    return true;
+  }
+
+  if (message.type === 'CANCEL_TRANSLATION') {
+    const tabId = sender.tab?.id || message.tabId;
+    console.log(`[YT-FA-Translator SW] 🛑 Received CANCEL_TRANSLATION for tab ${tabId}, videoId: ${message.videoId}`);
+    cancelTabTranslation(tabId, 'Explicit user/page cancellation');
+    sendResponse({ success: true, cancelled: true });
     return true;
   }
 
@@ -33,11 +96,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'TRANSLATE_SINGLE') {
-    translateSingleText(message.text)
-      .then((res) => sendResponse({ success: true, ...res }))
+    const tabId = sender.tab?.id;
+    if (tabId && activeTranslationsByTab.get(tabId)?.cancelled) {
+      sendResponse({ success: false, cancelled: true, error: 'ترجمه لغو شده است.' });
+      return true;
+    }
+
+    const controller = new AbortController();
+    if (tabId) {
+      activeTranslationsByTab.set(tabId, { controller, cancelled: false });
+    }
+
+    translateSingleText(message.text, controller.signal)
+      .then((res) => {
+        if (tabId && activeTranslationsByTab.get(tabId)?.cancelled) {
+          sendResponse({ success: false, cancelled: true, error: 'ترجمه لغو شده است.' });
+        } else {
+          sendResponse({ success: true, ...res });
+        }
+      })
       .catch((err) => {
-        console.error('[YT-FA-Translator SW] ❌ TRANSLATE_SINGLE error:', err);
-        sendResponse({ success: false, error: err.message });
+        if (controller.signal.aborted || err.name === 'AbortError') {
+          sendResponse({ success: false, cancelled: true, error: 'درخواست لغو شد.' });
+        } else {
+          console.error('[YT-FA-Translator SW] ❌ TRANSLATE_SINGLE error:', err);
+          sendResponse({ success: false, error: err.message });
+        }
       });
     return true;
   }
@@ -146,7 +230,8 @@ async function getApiCredentials() {
   };
 }
 
-async function translateChunk({ chunkItems }) {
+async function translateChunk({ chunkItems }, signal) {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   if (!chunkItems || chunkItems.length === 0) return { translations: [] };
 
   const creds = await getApiCredentials();
@@ -162,11 +247,11 @@ async function translateChunk({ chunkItems }) {
   let usedModel = creds.model;
 
   if (creds.provider === 'openai') {
-    translations = await callOpenAICompatible('https://api.openai.com/v1', creds.apiKey, creds.model, simplified);
+    translations = await callOpenAICompatible('https://api.openai.com/v1', creds.apiKey, creds.model, simplified, signal);
   } else if (creds.provider === 'custom') {
-    translations = await callOpenAICompatible(creds.baseUrl, creds.apiKey, creds.model, simplified);
+    translations = await callOpenAICompatible(creds.baseUrl, creds.apiKey, creds.model, simplified, signal);
   } else {
-    const geminiRes = await callGeminiWithFallback(creds.apiKey, creds.model, simplified);
+    const geminiRes = await callGeminiWithFallback(creds.apiKey, creds.model, simplified, signal);
     translations = geminiRes.translations;
     usedModel = geminiRes.usedModel;
   }
@@ -180,7 +265,8 @@ async function translateChunk({ chunkItems }) {
   return { translations, provider: creds.provider, model: usedModel };
 }
 
-async function translateSingleText(text) {
+async function translateSingleText(text, signal) {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   if (!text || !text.trim()) return { fa: '' };
   const clean = text.trim();
 
@@ -201,11 +287,11 @@ async function translateSingleText(text) {
   let usedModel = creds.model;
 
   if (creds.provider === 'openai') {
-    translations = await callOpenAICompatible('https://api.openai.com/v1', creds.apiKey, creds.model, batch);
+    translations = await callOpenAICompatible('https://api.openai.com/v1', creds.apiKey, creds.model, batch, signal);
   } else if (creds.provider === 'custom') {
-    translations = await callOpenAICompatible(creds.baseUrl, creds.apiKey, creds.model, batch);
+    translations = await callOpenAICompatible(creds.baseUrl, creds.apiKey, creds.model, batch, signal);
   } else {
-    const geminiRes = await callGeminiWithFallback(creds.apiKey, creds.model, batch);
+    const geminiRes = await callGeminiWithFallback(creds.apiKey, creds.model, batch, signal);
     translations = geminiRes.translations;
     usedModel = geminiRes.usedModel;
   }
@@ -402,20 +488,25 @@ async function getCandidateGeminiModels(cleanKey, preferredModel) {
   return orderedCandidates;
 }
 
-async function callGeminiWithFallback(apiKey, modelName, batchItems) {
+async function callGeminiWithFallback(apiKey, modelName, batchItems, signal) {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   const cleanKey = (apiKey || '').trim();
   const candidates = await getCandidateGeminiModels(cleanKey, modelName);
 
   let lastError = null;
 
   for (const model of candidates) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     try {
-      const translations = await executeGeminiCall(cleanKey, model, batchItems);
+      const translations = await executeGeminiCall(cleanKey, model, batchItems, signal);
       // Cache this working model!
       cachedGeminiModel = model;
       cachedGeminiKey = cleanKey;
       return { translations, usedModel: model };
     } catch (err) {
+      if (signal?.aborted || err.name === 'AbortError') {
+        throw err;
+      }
       console.warn(`[YT-FA-Translator SW] ⚠️ Model "${model}" failed: ${err.message}. Trying next candidate...`);
       lastError = err;
       if (cachedGeminiModel === model) {
@@ -427,7 +518,8 @@ async function callGeminiWithFallback(apiKey, modelName, batchItems) {
   throw lastError || new Error('هیچ‌یک از مدل‌های Gemini قادر به پردازش درخواست نبودند.');
 }
 
-async function executeGeminiCall(cleanKey, model, batchItems) {
+async function executeGeminiCall(cleanKey, model, batchItems, signal) {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   const startTime = Date.now();
   console.log(`[YT-FA-Translator SW] 🚀 [Gemini Calling] Model: ${model} | Items count: ${batchItems.length}`);
 
@@ -457,7 +549,8 @@ ${JSON.stringify(batchItems)}`;
       generationConfig: {
         temperature: 0.3
       }
-    })
+    }),
+    signal: signal
   });
 
   const duration = Date.now() - startTime;
@@ -488,11 +581,12 @@ ${JSON.stringify(batchItems)}`;
   return parsed;
 }
 
-async function callOpenAI(apiKey, modelName, batchItems) {
-  return callOpenAICompatible('https://api.openai.com/v1', apiKey, modelName, batchItems);
+async function callOpenAI(apiKey, modelName, batchItems, signal) {
+  return callOpenAICompatible('https://api.openai.com/v1', apiKey, modelName, batchItems, signal);
 }
 
-async function callOpenAICompatible(baseUrl, apiKey, modelName, batchItems) {
+async function callOpenAICompatible(baseUrl, apiKey, modelName, batchItems, signal) {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   const model = modelName || 'gpt-4o-mini';
   const cleanKey = (apiKey || '').trim();
   const url = normalizeChatCompletionsUrl(baseUrl);
@@ -528,9 +622,13 @@ Always respond with valid JSON: {"translations": [{"id": <number>, "fa": "<persi
       body: JSON.stringify({
         ...baseBody,
         response_format: { type: 'json_object' }
-      })
+      }),
+      signal: signal
     });
   } catch (netErr) {
+    if (signal?.aborted || netErr.name === 'AbortError') {
+      throw new DOMException('Aborted', 'AbortError');
+    }
     console.error(`[YT-FA-Translator SW] ❌ Network error connecting to ${url}:`, netErr);
     throw new Error(`خطای ارتباط با سرور (${url}): ${netErr.message}`);
   }
@@ -545,11 +643,13 @@ Always respond with valid JSON: {"translations": [{"id": <number>, "fa": "<persi
         errClone.includes('schema') ||
         errClone.includes('Additional properties are not allowed')
       ) {
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
         console.warn('[YT-FA-Translator SW] ⚠️ Server does not support response_format: json_object. Retrying without it...');
         response = await fetch(url, {
           method: 'POST',
           headers,
-          body: JSON.stringify(baseBody)
+          body: JSON.stringify(baseBody),
+          signal: signal
         });
       }
     } catch (_) {}

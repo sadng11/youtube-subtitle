@@ -192,13 +192,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  let currentVideoState = null;
+
   function updateActionCardUI(state) {
+    currentVideoState = state;
     if (state.isTranslating) {
       videoStatusDot.className = 'video-status-dot loading';
       videoActionDesc.textContent = 'هوش مصنوعی در حال ترجمه زیرنویس ویدیو است...';
-      startTranslateBtn.disabled = true;
-      startTranslateBtn.className = 'btn btn-action-translate';
-      startTranslateBtnText.textContent = 'در حال ترجمه هوشمند...';
+      startTranslateBtn.disabled = false;
+      startTranslateBtn.className = 'btn btn-action-translate state-cancel';
+      startTranslateBtnText.textContent = '⏹ لغو و توقف ترجمه';
     } else if (state.hasSubtitles && state.isEnabled) {
       videoStatusDot.className = 'video-status-dot active';
       videoActionDesc.textContent = 'زیرنویس فارسی ترجمه شده و روی ویدیو در حال نمایش است.';
@@ -228,6 +231,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   startTranslateBtn.addEventListener('click', () => {
     if (!activeTabId) return;
+
+    if (currentVideoState && currentVideoState.isTranslating) {
+      chrome.tabs.sendMessage(activeTabId, { type: 'CANCEL_TRANSLATION_CMD' }, () => {
+        setTimeout(checkActiveYouTubeTab, 300);
+      });
+      return;
+    }
+
     chrome.tabs.sendMessage(activeTabId, { type: 'TRIGGER_TRANSLATION_CMD' }, () => {
       setTimeout(checkActiveYouTubeTab, 300);
     });

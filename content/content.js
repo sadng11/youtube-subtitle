@@ -19,11 +19,31 @@
   let toggleBtnEl = null;
   let isTranslating = false;
   let hasStartedTranslation = false;
+  let activeTranslationRunId = 0;
   let captionObserver = null;
   let liveDebounceTimer = null;
   let lastObservedText = '';
   let preparingTimeout = null;
   const realtimeTranslations = new Map();
+
+  function cancelTranslation(reason = 'user_cancelled') {
+    console.log(`[YT-FA-Translator] 🛑 Cancelling translation. Reason: ${reason}`);
+    activeTranslationRunId++;
+    isTranslating = false;
+    isTranslationRequested = false;
+    hasStartedTranslation = false;
+    clearTimeout(preparingTimeout);
+    clearTimeout(liveDebounceTimer);
+
+    const vid = getVideoId();
+    try {
+      chrome.runtime.sendMessage({
+        type: 'CANCEL_TRANSLATION',
+        videoId: vid,
+        reason
+      });
+    } catch (_) {}
+  }
 
   // 1. Inject page-script.js to read captions and intercept player traffic
   function injectPageScript() {
@@ -92,6 +112,15 @@
     if (message.type === 'TRIGGER_TRANSLATION_CMD') {
       onTranslateBtnClick();
       sendResponse({ success: true });
+      return true;
+    }
+    if (message.type === 'CANCEL_TRANSLATION_CMD') {
+      cancelTranslation('popup_cmd');
+      setStatus('ترجمه متوقف شد', false);
+      setTimeout(() => setStatus(null), 2500);
+      updateTranslateButtonUI('idle');
+      applyStyles();
+      sendResponse({ success: true, cancelled: true });
       return true;
     }
   });
@@ -214,8 +243,8 @@
         iconEl.style.display = '';
         iconEl.innerHTML = `<div class="yt-fa-spinner" style="width:13px;height:13px;border-width:2px;margin:0;"></div>`;
       }
-      if (labelEl) labelEl.textContent = 'در حال ترجمه...';
-      toggleBtnEl.title = 'ترجمه هوشمند زیرنویس در حال پردازش است...';
+      if (labelEl) labelEl.textContent = 'در حال ترجمه... (لغو)';
+      toggleBtnEl.title = 'ترجمه هوشمند زیرنویس در حال پردازش است. برای انصراف و توقف کلیک کنید.';
     } else if (state === 'active') {
       if (iconEl) {
         iconEl.style.display = '';
@@ -249,7 +278,16 @@
 
   // 7. Button Click Handler
   async function onTranslateBtnClick() {
-    if (isTranslating) return;
+    // If currently translating, clicking cancels/stops the translation!
+    if (isTranslating) {
+      console.log('[YT-FA-Translator] 🛑 User cancelled translation via button click.');
+      cancelTranslation('user_clicked_button');
+      setStatus('ترجمه متوقف شد', false);
+      setTimeout(() => setStatus(null), 2500);
+      updateTranslateButtonUI('idle');
+      applyStyles();
+      return;
+    }
 
     // A. Subtitles already active in memory -> Toggle Persian overlay on/off
     if (activeSubtitles.length > 0) {
@@ -546,6 +584,8 @@
     if (!videoId || hasStartedTranslation || (activeSubtitles.length > 0 && activeSubtitles.some(s => s.fa))) return;
     hasStartedTranslation = true;
     clearTimeout(preparingTimeout);
+    activeTranslationRunId++;
+    const currentRunId = activeTranslationRunId;
 
     // Check Cache first
     const cacheRes = await chrome.runtime.sendMessage({ type: 'CHECK_CACHE', videoId });
@@ -619,7 +659,10 @@
     let completedChunks = 0;
 
     for (const chunkObj of prioritizedChunks) {
-      if (videoId !== getVideoId()) break;
+      if (!isTranslating || !isTranslationRequested || videoId !== getVideoId() || currentRunId !== activeTranslationRunId) {
+        console.log('[YT-FA-Translator] 🛑 Translation loop cancelled before chunk', chunkObj.index);
+        break;
+      }
 
       completedChunks++;
       setStatus(`در حال ترجمه هوشمند: دسته ${completedChunks} از ${totalChunks}...`, true);
@@ -627,8 +670,14 @@
       try {
         const res = await chrome.runtime.sendMessage({
           type: 'TRANSLATE_CHUNK',
+          videoId: videoId,
           chunkItems: chunkObj.items
         });
+
+        if (!isTranslating || !isTranslationRequested || videoId !== getVideoId() || currentRunId !== activeTranslationRunId || res?.cancelled) {
+          console.log('[YT-FA-Translator] 🛑 Translation cancelled or tab/video changed. Discarding chunk', chunkObj.index);
+          break;
+        }
 
         if (res && res.success && Array.isArray(res.translations)) {
           res.translations.forEach((t) => {
@@ -647,6 +696,10 @@
           applyStyles();
           onTimeUpdate();
         } else {
+          if (res?.cancelled) {
+            console.log('[YT-FA-Translator] 🛑 Translation chunk was cancelled by backend.');
+            break;
+          }
           console.error(
             `%c[YT-FA-Translator] ❌ [LLM Batch Error]`,
             'color: #dc2626; font-weight: bold;',
@@ -658,6 +711,9 @@
           return;
         }
       } catch (err) {
+        if (!isTranslating || !isTranslationRequested || videoId !== getVideoId() || currentRunId !== activeTranslationRunId) {
+          break;
+        }
         console.error(
           `%c[YT-FA-Translator] ❌ [LLM Batch Request Failed Exception]`,
           'color: #dc2626; font-weight: bold;',
@@ -671,7 +727,7 @@
     }
 
     // Finished all chunks!
-    if (videoId === getVideoId()) {
+    if (videoId === getVideoId() && isTranslating && isTranslationRequested && currentRunId === activeTranslationRunId) {
       setStatus('ترجمه زیرنویس کامل شد ✓', false);
       setTimeout(() => setStatus(null), 3000);
       chrome.runtime.sendMessage({
@@ -684,7 +740,9 @@
       applyStyles();
       onTimeUpdate();
     }
-    isTranslating = false;
+    if (currentRunId === activeTranslationRunId) {
+      isTranslating = false;
+    }
   }
 
   // 9. Parse Subtitle Formats (JSON3, XML, WebVTT)
@@ -774,6 +832,9 @@
   async function onVideoChange() {
     const newVideoId = getVideoId();
     if (!newVideoId) {
+      if (isTranslating) {
+        cancelTranslation('navigated_away_from_video');
+      }
       currentVideoId = null;
       hasStartedTranslation = false;
       isTranslationRequested = false;
@@ -788,6 +849,9 @@
     }
 
     if (newVideoId !== currentVideoId) {
+      if (isTranslating) {
+        cancelTranslation('switched_video');
+      }
       currentVideoId = newVideoId;
       hasStartedTranslation = false;
       isTranslationRequested = false;
@@ -828,6 +892,24 @@
       }
     }
   }
+
+  window.addEventListener('yt-navigate-start', () => {
+    if (isTranslating) {
+      cancelTranslation('yt-navigate-start');
+    }
+  });
+
+  window.addEventListener('pagehide', () => {
+    if (isTranslating) {
+      cancelTranslation('pagehide');
+    }
+  });
+
+  window.addEventListener('beforeunload', () => {
+    if (isTranslating) {
+      cancelTranslation('beforeunload');
+    }
+  });
 
   window.addEventListener('yt-navigate-finish', () => {
     ensureOverlay();
