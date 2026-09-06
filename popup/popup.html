@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>تنظیمات مترجم زیرنویس یوتیوب</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo-box">
+        <img src="../icons/icon-48.png" alt="لوگو" class="logo-img">
+        <div>
+          <h1 class="title">مترجم یوتیوب</h1>
+          <span class="subtitle">ترجمه هوشمند زیرنویس با هوش مصنوعی</span>
+        </div>
+      </div>
+      <div class="status-indicator online" id="statusIndicator" title="آماده به کار"></div>
+    </header>
+
+    <!-- Main Switch -->
+    <div class="card toggle-card">
+      <div class="card-info">
+        <span class="card-title">فعال‌سازی مترجم</span>
+        <span class="card-desc">نمایش زیرنویس فارسی روی ویدیوها</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="enabledToggle" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <!-- Bilingual Switch -->
+    <div class="card toggle-card">
+      <div class="card-info">
+        <span class="card-title">حالت دوزبانه</span>
+        <span class="card-desc">نمایش همزمان متن انگلیسی و فارسی</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="bilingualToggle" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <!-- AI Provider Section -->
+    <div class="card section-card">
+      <label class="section-label" for="providerSelect">ارائه‌دهنده هوش مصنوعی:</label>
+      <select id="providerSelect" class="form-select">
+        <option value="gemini">Google Gemini (پیشنهادی - سریع و رایگان)</option>
+        <option value="openai">OpenAI (ChatGPT / GPT-4o-mini)</option>
+        <option value="custom">مسیر سفارشی / Custom (سازگار با OpenAI)</option>
+      </select>
+
+      <!-- Gemini Settings -->
+      <div id="geminiSettings" class="provider-fields">
+        <div class="input-group">
+          <label for="geminiApiKey">کلید Gemini API:</label>
+          <div class="password-wrapper">
+            <input type="password" id="geminiApiKey" placeholder="AIzaSy..." class="form-input" autocomplete="off">
+            <button type="button" class="btn-eye" id="toggleGeminiKey" title="مشاهده کلید">👁</button>
+          </div>
+          <span class="input-hint">کلید رایگان را از <a href="https://aistudio.google.com/app/apikey" target="_blank">Google AI Studio</a> بگیرید.</span>
+        </div>
+        <div class="input-group">
+          <label for="geminiModel">مدل انتخابی:</label>
+          <select id="geminiModel" class="form-select">
+            <option value="gemini-1.5-flash">Gemini 1.5 Flash (بهترین تعادل سرعت و کیفیت)</option>
+            <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+            <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- OpenAI Settings -->
+      <div id="openaiSettings" class="provider-fields hidden">
+        <div class="input-group">
+          <label for="openaiApiKey">کلید OpenAI API:</label>
+          <div class="password-wrapper">
+            <input type="password" id="openaiApiKey" placeholder="sk-..." class="form-input" autocomplete="off">
+            <button type="button" class="btn-eye" id="toggleOpenaiKey" title="مشاهده کلید">👁</button>
+          </div>
+          <span class="input-hint">کلید را از <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI Dashboard</a> تهیه کنید.</span>
+        </div>
+        <div class="input-group">
+          <label for="openaiModel">مدل انتخابی:</label>
+          <select id="openaiModel" class="form-select">
+            <option value="gpt-4o-mini">GPT-4o Mini (سریع و فوق‌العاده مقرون‌به‌صرفه)</option>
+            <option value="gpt-4o">GPT-4o</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Custom OpenAI-Compatible Settings -->
+      <div id="customSettings" class="provider-fields hidden">
+        <div class="input-group">
+          <label for="customBaseUrl">آدرس پایه (Base URL):</label>
+          <input type="url" id="customBaseUrl" placeholder="https://api.deepseek.com/v1" class="form-input ltr-input" autocomplete="off">
+          <span class="input-hint">مثال: <code>https://api.deepseek.com/v1</code> یا <code>http://localhost:11434/v1</code></span>
+        </div>
+        <div class="input-group">
+          <label for="customApiKey">کلید API (Key):</label>
+          <div class="password-wrapper">
+            <input type="password" id="customApiKey" placeholder="sk-... (یا اختیاری برای سرورهای محلی)" class="form-input" autocomplete="off">
+            <button type="button" class="btn-eye" id="toggleCustomKey" title="مشاهده کلید">👁</button>
+          </div>
+          <span class="input-hint">برای سرورهای محلی (مثل Ollama) در صورت عدم نیاز می‌تواند خالی باشد.</span>
+        </div>
+        <div class="input-group">
+          <label for="customModel">نام مدل (Model):</label>
+          <input type="text" id="customModel" placeholder="deepseek-chat یا llama3 یا gpt-4o" class="form-input ltr-input" autocomplete="off">
+          <span class="input-hint">شناسه مدلی که در این سرویس یا سرور فعال است.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Appearance Settings -->
+    <div class="card section-card">
+      <label class="section-label" for="fontSize">اندازه فونت زیرنویس:</label>
+      <div class="font-size-options">
+        <button type="button" class="font-btn" data-size="16">کوچک (16px)</button>
+        <button type="button" class="font-btn active" data-size="20">متوسط (20px)</button>
+        <button type="button" class="font-btn" data-size="25">بزرگ (25px)</button>
+      </div>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="actions">
+      <button type="button" id="saveBtn" class="btn btn-primary">
+        <span>ذخیره تنظیمات</span>
+      </button>
+      <button type="button" id="testBtn" class="btn btn-secondary">
+        <span>تست اتصال</span>
+      </button>
+      <button type="button" id="clearCacheBtn" class="btn btn-secondary" title="پاک‌کردن تمام زیرنویس‌های ذخیره‌شده محلی">
+        <span>پاکسازی کش</span>
+      </button>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
