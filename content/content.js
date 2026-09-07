@@ -123,6 +123,14 @@
       sendResponse({ success: true, cancelled: true });
       return true;
     }
+    if (message.type === 'DOWNLOAD_SRT_CMD') {
+      handleDownloadSrt(sendResponse);
+      return true;
+    }
+    if (message.type === 'UPLOAD_SRT_CMD') {
+      handleUploadSrt(message.srtText, sendResponse);
+      return true;
+    }
   });
 
   // 4. Load user settings
@@ -206,6 +214,7 @@
 
     injectControlsElements();
     setupLiveCaptionObserver(player);
+    setupDragAndDrop(player);
     return true;
   }
 
@@ -881,6 +890,196 @@
   function getVideoId() {
     const urlParams = new URLSearchParams(window.location.search);
     return urlParams.get('v');
+  }
+
+  // 10. SRT Export & Import Utilities
+  function formatSrtTime(seconds) {
+    const totalMs = Math.max(0, Math.floor((seconds || 0) * 1000));
+    const hrs = Math.floor(totalMs / 3600000);
+    const mins = Math.floor((totalMs % 3600000) / 60000);
+    const secs = Math.floor((totalMs % 60000) / 1000);
+    const ms = totalMs % 1000;
+    return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+  }
+
+  function itemsToSrt(items) {
+    let srtContent = '';
+    let index = 1;
+    for (const item of items) {
+      const text = (item.fa && item.fa.trim()) ? item.fa.trim() : (item.text ? item.text.trim() : '');
+      if (!text) continue;
+      const startStr = formatSrtTime(item.start);
+      const endStr = formatSrtTime(item.end);
+      srtContent += `${index}\n${startStr} --> ${endStr}\n${text}\n\n`;
+      index++;
+    }
+    return srtContent.trim() + '\n';
+  }
+
+  function parseSrtToItems(srtText) {
+    const items = [];
+    if (!srtText) return items;
+    const normalized = srtText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const blocks = normalized.split(/\n\s*\n/);
+
+    function parseTime(timeStr) {
+      if (!timeStr) return 0;
+      const parts = timeStr.trim().replace(',', '.').split(':');
+      if (parts.length === 3) {
+        return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
+      }
+      if (parts.length === 2) {
+        return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
+      }
+      return parseFloat(timeStr) || 0;
+    }
+
+    let autoId = 1;
+    for (const block of blocks) {
+      const lines = block.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+      if (lines.length < 2) continue;
+
+      let timeLineIdx = -1;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes('-->')) {
+          timeLineIdx = i;
+          break;
+        }
+      }
+      if (timeLineIdx === -1) continue;
+
+      const [startRaw, endRaw] = lines[timeLineIdx].split('-->');
+      const start = parseTime(startRaw);
+      const end = parseTime(endRaw);
+      const textLines = lines.slice(timeLineIdx + 1).join('\n').trim();
+
+      if (textLines && !isNaN(start) && !isNaN(end)) {
+        items.push({
+          id: autoId++,
+          start: start,
+          end: end,
+          text: textLines,
+          fa: textLines
+        });
+      }
+    }
+    return items;
+  }
+
+  function handleDownloadSrt(sendResponse) {
+    const vid = getVideoId();
+    const sourceItems = activeSubtitles.length > 0 ? activeSubtitles : (cachedSubtitles || []);
+
+    const triggerDownload = (items) => {
+      const validItems = items.filter((s) => (s.fa && s.fa.trim()) || (s.text && s.text.trim()));
+      if (!validItems || validItems.length === 0) {
+        sendResponse({ success: false, error: 'هیچ زیرنویسی برای این ویدیو در حافظه کش یافت نشد.' });
+        return;
+      }
+
+      const srtText = itemsToSrt(validItems);
+      const title = (document.title || 'subtitles')
+        .replace(' - YouTube', '')
+        .replace(/[\/\\?%*:|"<>]/g, '_')
+        .trim();
+      const filename = `${title || vid || 'youtube'}_fa.srt`;
+
+      const blob = new Blob([srtText], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+      sendResponse({ success: true, count: validItems.length, filename });
+    };
+
+    if (sourceItems.length > 0) {
+      triggerDownload(sourceItems);
+    } else if (vid) {
+      chrome.runtime.sendMessage({ type: 'CHECK_CACHE', videoId: vid }, (res) => {
+        if (res && res.cached && Array.isArray(res.items) && res.items.length > 0) {
+          triggerDownload(res.items);
+        } else {
+          sendResponse({ success: false, error: 'هیچ زیرنویسی برای این ویدیو در حافظه کش یافت نشد.' });
+        }
+      });
+    } else {
+      sendResponse({ success: false, error: 'هیچ زیرنویسی برای این ویدیو در حافظه کش یافت نشد.' });
+    }
+  }
+
+  function handleUploadSrt(srtText, sendResponse) {
+    const vid = getVideoId();
+    if (!vid) {
+      sendResponse({ success: false, error: 'شناسه ویدیوی یوتیوب یافت نشد.' });
+      return;
+    }
+    if (!srtText) {
+      sendResponse({ success: false, error: 'فایل زیرنویس خالی است.' });
+      return;
+    }
+
+    const parsedItems = parseSrtToItems(srtText);
+    if (parsedItems.length === 0) {
+      sendResponse({ success: false, error: 'قالب فایل SRT نامعتبر است یا خطی یافت نشد.' });
+      return;
+    }
+
+    applyCustomSrtItems(parsedItems, vid);
+    sendResponse({ success: true, count: parsedItems.length });
+  }
+
+  function applyCustomSrtItems(parsedItems, vid) {
+    activeSubtitles = parsedItems;
+    cachedSubtitles = parsedItems;
+    isEnabled = true;
+    isTranslationRequested = true;
+    isTranslating = false;
+
+    chrome.runtime.sendMessage({
+      type: 'SAVE_FULL_CACHE',
+      videoId: vid,
+      items: parsedItems
+    }).catch(() => {});
+
+    ensureOverlay();
+    applyStyles();
+    onTimeUpdate();
+    updateTranslateButtonUI('active');
+    setStatus(`زیرنویس SRT لود شد (${parsedItems.length} خط) ✓`, false);
+    setTimeout(() => setStatus(null), 3500);
+  }
+
+  function setupDragAndDrop(player) {
+    if (!player || player._hasSrtDrop) return;
+    player._hasSrtDrop = true;
+
+    player.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+
+    player.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const file = e.dataTransfer?.files?.[0];
+      if (file && (file.name.endsWith('.srt') || file.type.includes('text'))) {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const srtText = ev.target.result;
+          const vid = getVideoId();
+          if (!vid) return;
+          const parsed = parseSrtToItems(srtText);
+          if (parsed.length > 0) {
+            applyCustomSrtItems(parsed, vid);
+          }
+        };
+        reader.readAsText(file);
+      }
+    });
   }
 
   // 10. Navigation & Initialization

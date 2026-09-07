@@ -195,6 +195,41 @@ body {
   box-shadow: 0 4px 14px rgba(239, 68, 68, 0.5);
 }
 
+.srt-actions-group {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.btn-srt {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #e2e8f0;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: all 0.2s ease;
+}
+
+.btn-srt:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(99, 102, 241, 0.6);
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.btn-srt:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .section-card {
   display: flex;
   flex-direction: column;

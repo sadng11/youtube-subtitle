@@ -8,6 +8,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const videoActionDesc = document.getElementById('videoActionDesc');
   const startTranslateBtn = document.getElementById('startTranslateBtn');
   const startTranslateBtnText = document.getElementById('startTranslateBtnText');
+  const downloadSrtBtn = document.getElementById('downloadSrtBtn');
+  const uploadSrtBtn = document.getElementById('uploadSrtBtn');
+  const srtFileInput = document.getElementById('srtFileInput');
 
   const enabledToggle = document.getElementById('enabledToggle');
   const autoTranslateToggle = document.getElementById('autoTranslateToggle');
@@ -243,6 +246,55 @@ document.addEventListener('DOMContentLoaded', async () => {
       setTimeout(checkActiveYouTubeTab, 300);
     });
   });
+
+  if (downloadSrtBtn) {
+    downloadSrtBtn.addEventListener('click', () => {
+      if (!activeTabId) return;
+      chrome.tabs.sendMessage(activeTabId, { type: 'DOWNLOAD_SRT_CMD' }, (res) => {
+        if (chrome.runtime.lastError || !res) {
+          showToast('امکان دریافت زیرنویس از صفحه وجود ندارد.', true);
+          return;
+        }
+        if (!res.success) {
+          showToast(res.error || 'زیرنویسی در حافظه کش یافت نشد.', true);
+          return;
+        }
+        showToast(`زیرنویس با موفقیت دانلود شد (${res.count} خط) ✓`);
+      });
+    });
+  }
+
+  if (uploadSrtBtn && srtFileInput) {
+    uploadSrtBtn.addEventListener('click', () => {
+      srtFileInput.click();
+    });
+
+    srtFileInput.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const srtText = ev.target.result;
+        if (!activeTabId) return;
+
+        chrome.tabs.sendMessage(activeTabId, { type: 'UPLOAD_SRT_CMD', srtText, fileName: file.name }, (res) => {
+          if (chrome.runtime.lastError || !res) {
+            showToast('خطا در ارسال فایل به تب یوتیوب.', true);
+            return;
+          }
+          if (res.success) {
+            showToast(`فایل SRT لود شد (${res.count} خط) ✓`);
+            setTimeout(checkActiveYouTubeTab, 300);
+          } else {
+            showToast(res.error || 'خطا در پردازش فایل SRT.', true);
+          }
+        });
+      };
+      reader.readAsText(file);
+      srtFileInput.value = '';
+    });
+  }
 
   checkActiveYouTubeTab();
 
