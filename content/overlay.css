@@ -281,3 +281,77 @@
     display: none;
   }
 }
+
+/* Dropzone Modal */
+#yt-fa-dropzone-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 999999;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  direction: rtl;
+  user-select: none;
+  font-family: 'Vazirmatn', 'Segoe UI', Tahoma, system-ui, sans-serif;
+}
+
+.yt-fa-dropzone-box {
+  width: 90%;
+  max-width: 480px;
+  background: #0f172a;
+  border: 2px dashed rgba(99, 102, 241, 0.6);
+  border-radius: 16px;
+  padding: 36px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+  cursor: pointer;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+  transition: all 0.2s ease;
+}
+
+.yt-fa-dropzone-box:hover,
+.yt-fa-dropzone-box.drag-over {
+  border-color: #6366f1;
+  background: #1e1b4b;
+  transform: scale(1.02);
+}
+
+.yt-fa-dropzone-icon {
+  font-size: 48px;
+  line-height: 1;
+}
+
+.yt-fa-dropzone-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.yt-fa-dropzone-desc {
+  font-size: 13px;
+  color: #94a3b8;
+  line-height: 1.6;
+}
+
+.yt-fa-dropzone-close {
+  margin-top: 10px;
+  padding: 6px 16px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #cbd5e1;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.yt-fa-dropzone-close:hover {
+  background: rgba(239, 68, 68, 0.4);
+  color: #ffffff;
+}

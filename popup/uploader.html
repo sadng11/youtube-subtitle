@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>مدیریت و آپلود زیرنویس SRT - مترجم یوتیوب</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: #151d2f;
+      --card-border: rgba(255, 255, 255, 0.08);
+      --primary: #38bdf8;
+      --primary-hover: #0ea5e9;
+      --accent: #6366f1;
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --success: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Vazirmatn', 'Segoe UI', Tahoma, system-ui, -apple-system, sans-serif;
+    }
+
+    body {
+      background: radial-gradient(circle at 50% 0%, #1a233b 0%, var(--bg) 80%);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 30px 20px;
+    }
+
+    .wrapper {
+      width: 100%;
+      max-width: 680px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand img {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      box-shadow: 0 4px 12px rgba(56, 189, 248, 0.3);
+    }
+
+    .brand h1 {
+      font-size: 19px;
+      font-weight: 800;
+      color: #fff;
+    }
+
+    .brand p {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card-title {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #fff;
+    }
+
+    /* Video ID Section */
+    .video-picker {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .input-group {
+      display: flex;
+      gap: 8px;
+    }
+
+    .input-field {
+      flex: 1;
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 10px 14px;
+      color: #fff;
+      font-size: 13px;
+      direction: ltr;
+      text-align: left;
+      font-family: monospace;
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    .input-field:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 18px;
+      border-radius: 10px;
+      border: none;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-decoration: none;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #0ea5e9, #6366f1);
+      color: white;
+      box-shadow: 0 4px 15px rgba(14, 165, 233, 0.3);
+    }
+
+    .btn-primary:hover {
+      filter: brightness(1.1);
+      transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.07);
+      color: var(--text);
+      border: 1px solid var(--card-border);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    .btn-success {
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: white;
+    }
+
+    /* Dropzone */
+    .dropzone {
+      border: 2px dashed rgba(56, 189, 248, 0.35);
+      border-radius: 14px;
+      background: rgba(14, 165, 233, 0.03);
+      padding: 40px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+    }
+
+    .dropzone:hover, .dropzone.drag-over {
+      border-color: var(--primary);
+      background: rgba(14, 165, 233, 0.08);
+      transform: scale(1.01);
+    }
+
+    .dropzone-icon {
+      font-size: 46px;
+      filter: drop-shadow(0 4px 12px rgba(56, 189, 248, 0.4));
+    }
+
+    .dropzone-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .dropzone-subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      max-width: 380px;
+      line-height: 1.5;
+    }
+
+    /* Results */
+    .result-box {
+      margin-top: 20px;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 12px;
+      padding: 16px;
+      display: none;
+      flex-direction: column;
+      gap: 14px;
+      animation: fadeIn 0.3s ease;
+    }
+
+    .result-box.show {
+      display: flex;
+    }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 10px;
+    }
+
+    .stat-item {
+      background: rgba(255, 255, 255, 0.04);
+      padding: 10px 14px;
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .stat-value {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--primary);
+    }
+
+    .badge-storage {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      width: fit-content;
+    }
+
+    .preview-box {
+      background: #080c14;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 12px;
+      max-height: 150px;
+      overflow-y: auto;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      line-height: 1.6;
+    }
+
+    .preview-line {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      padding: 4px 0;
+    }
+
+    .preview-line:last-child {
+      border-bottom: none;
+    }
+
+    .preview-time {
+      color: var(--text-muted);
+      font-family: monospace;
+      margin-left: 8px;
+      font-size: 11px;
+    }
+
+    .alert {
+      padding: 12px 16px;
+      border-radius: 10px;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .alert-error {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #fca5a5;
+    }
+
+    .alert-success {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: #6ee7b7;
+    }
+
+    .footer-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <img src="../icons/icon-48.png" alt="Icon">
+        <div>
+          <h1>آپلود و ذخیره‌سازی زیرنویس SRT</h1>
+          <p>ذخیره مستقیم در لوکال استورج بدون نیاز به ترجمه مجدد و توکن</p>
+        </div>
+      </div>
+      <a href="#" id="returnToYtBtn" class="btn btn-secondary" style="display: none;">
+        <span>▶ بازگشت به ویدیو</span>
+      </a>
+    </header>
+
+    <!-- Video ID Selector Card -->
+    <div class="card">
+      <div class="card-title">
+        <span>🎯 شناسه ویدیوی یوتیوب (Video ID)</span>
+      </div>
+      <div class="video-picker">
+        <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">
+          زیرنویس آپلود شده با کلید <code id="keyPreviewCode" style="color: var(--primary);">yt_sub_...</code> در حافظه ذخیره می‌شود.
+        </p>
+        <div class="input-group">
+          <input type="text" id="videoUrlInput" class="input-field" placeholder="مثال: https://www.youtube.com/watch?v=kcckH5s3XlQ یا شناسه kcckH5s3XlQ">
+          <button type="button" id="detectTabBtn" class="btn btn-secondary">
+            🔍 شناسه ویدیوی فعال
+          </button>
+        </div>
+        <div id="videoInfoBadge" style="font-size: 12px; color: #38bdf8; display: none;"></div>
+      </div>
+    </div>
+
+    <!-- Dropzone Card -->
+    <div class="card">
+      <div class="card-title">
+        <span>📂 انتخاب فایل زیرنویس</span>
+      </div>
+
+      <div class="dropzone" id="dropzone">
+        <div class="dropzone-icon">📤</div>
+        <div class="dropzone-title">فایل .srt را به اینجا بکشید و رها کنید</div>
+        <div class="dropzone-subtitle">یا برای انتخاب فایل از کامپیوتر کلیک کنید (پشتیبانی کامل از فایل‌های حجیم ۱ تا ۵۰ مگابایت)</div>
+        <button type="button" class="btn btn-primary" style="margin-top: 8px;">
+          انتخاب فایل SRT از سیستم
+        </button>
+        <input type="file" id="fileInput" accept=".srt,text/plain" style="display: none;">
+      </div>
+
+      <!-- Result View -->
+      <div class="result-box" id="resultBox">
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+          <div class="badge-storage" id="storageBadge">
+            <span>✓ با موفقیت در لوکال استورج ذخیره شد</span>
+          </div>
+          <span id="storageKeyName" style="font-size: 12px; font-family: monospace; color: var(--text-muted);"></span>
+        </div>
+
+        <div class="stat-grid">
+          <div class="stat-item">
+            <span class="stat-label">نام فایل</span>
+            <span class="stat-value" id="resFileName" style="font-size: 12px; font-weight: 500; color: #fff; word-break: break-all;">-</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">حجم فایل</span>
+            <span class="stat-value" id="resFileSize">-</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">تعداد خطوط زیرنویس</span>
+            <span class="stat-value" id="resLineCount">-</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">مدت زمان پوشش</span>
+            <span class="stat-value" id="resDuration">-</span>
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px;">پیش‌نمایش خطوط ابتدایی:</div>
+          <div class="preview-box" id="previewBox"></div>
+        </div>
+
+        <div class="footer-actions">
+          <button type="button" id="verifyStorageBtn" class="btn btn-secondary">
+            🔄 بررسی مجدد حافظه
+          </button>
+          <button type="button" id="openVideoNowBtn" class="btn btn-success">
+            ▶ تماشای ویدیو در یوتیوب با این زیرنویس
+          </button>
+        </div>
+      </div>
+
+      <div id="alertBox" style="margin-top: 14px; display: none;"></div>
+    </div>
+  </div>
+
+  <script src="uploader.js"></script>
+</body>
+</html>

@@ -5,6 +5,7 @@
   "description": "ترجمه هوشمند زیرنویس انگلیسی ویدیوهای یوتیوب به زبان فارسی با هوش مصنوعی (Gemini / OpenAI)",
   "permissions": [
     "storage",
+    "unlimitedStorage",
     "activeTab",
     "tabs"
   ],

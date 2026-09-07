@@ -17,6 +17,7 @@
   let subEnEl = null;
   let videoEl = null;
   let toggleBtnEl = null;
+  let uploadBtnEl = null;
   let isTranslating = false;
   let hasStartedTranslation = false;
   let activeTranslationRunId = 0;
@@ -129,6 +130,16 @@
     }
     if (message.type === 'UPLOAD_SRT_CMD') {
       handleUploadSrt(message.srtText, sendResponse);
+      return true;
+    }
+    if (message.type === 'LOAD_SRT_ITEMS_CMD') {
+      applyCustomSrtItems(message.items, message.videoId || getVideoId());
+      sendResponse({ success: true, count: message.items?.length || 0 });
+      return true;
+    }
+    if (message.type === 'TRIGGER_PAGE_FILE_INPUT') {
+      showDropzoneOverlay();
+      sendResponse({ success: true });
       return true;
     }
   });
@@ -419,6 +430,25 @@
         statusBadgeEl.style.display = 'none';
       }
       rightControls.insertBefore(statusBadgeEl, toggleBtnEl);
+    }
+
+    // 3. Quick Upload Button right on YouTube player controls
+    if (!uploadBtnEl || !rightControls.contains(uploadBtnEl)) {
+      if (!uploadBtnEl) {
+        uploadBtnEl = document.createElement('button');
+        uploadBtnEl.id = 'yt-fa-upload-btn';
+        uploadBtnEl.setAttribute('type', 'button');
+        uploadBtnEl.className = 'ytp-button yt-fa-control-btn';
+        uploadBtnEl.setAttribute('aria-label', 'آپلود زیرنویس SRT');
+        uploadBtnEl.title = 'آپلود مستقیم فایل زیرنویس SRT روی این ویدیو';
+        uploadBtnEl.innerHTML = `<span style="font-size: 14px; display: inline-flex; align-items: center; justify-content: center;">📤</span>`;
+
+        uploadBtnEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          triggerPageFileInput();
+        });
+      }
+      rightControls.insertBefore(uploadBtnEl, toggleBtnEl.nextSibling);
     }
 
     if (lastStatusState) {
@@ -889,7 +919,12 @@
 
   function getVideoId() {
     const urlParams = new URLSearchParams(window.location.search);
-    return urlParams.get('v');
+    const v = urlParams.get('v');
+    if (v) return v;
+    if (window.location.pathname.startsWith('/shorts/')) {
+      return window.location.pathname.split('/shorts/')[1].split('/')[0].split('?')[0];
+    }
+    return null;
   }
 
   // 10. SRT Export & Import Utilities
@@ -924,22 +959,28 @@
   function parseSrtToItems(srtText) {
     const items = [];
     if (!srtText) return items;
-    const normalized = srtText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    const blocks = normalized.split(/\n\s*\n/);
 
-    function parseTime(timeStr) {
+    const cleanText = srtText.replace(/^\uFEFF/, '');
+    const normalized = cleanText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    function parseTimestamp(timeStr) {
       if (!timeStr) return 0;
-      const parts = timeStr.trim().replace(',', '.').split(':');
-      if (parts.length === 3) {
-        return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
+      const match = timeStr.match(/(?:(\d+):)?(\d{1,2}):(\d{2})[,.](\d{1,3})/);
+      if (!match) {
+        const m2 = timeStr.match(/(\d{1,2}):(\d{2})/);
+        if (m2) return parseInt(m2[1], 10) * 60 + parseInt(m2[2], 10);
+        return parseFloat(timeStr) || 0;
       }
-      if (parts.length === 2) {
-        return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
-      }
-      return parseFloat(timeStr) || 0;
+      const hours = match[1] ? parseInt(match[1], 10) : 0;
+      const minutes = parseInt(match[2], 10);
+      const seconds = parseInt(match[3], 10);
+      const ms = parseInt(match[4].padEnd(3, '0').slice(0, 3), 10);
+      return hours * 3600 + minutes * 60 + seconds + ms / 1000;
     }
 
+    const blocks = normalized.split(/\n\s*\n/);
     let autoId = 1;
+
     for (const block of blocks) {
       const lines = block.trim().split('\n').map((l) => l.trim()).filter(Boolean);
       if (lines.length < 2) continue;
@@ -953,21 +994,43 @@
       }
       if (timeLineIdx === -1) continue;
 
-      const [startRaw, endRaw] = lines[timeLineIdx].split('-->');
-      const start = parseTime(startRaw);
-      const end = parseTime(endRaw);
+      const timeLine = lines[timeLineIdx];
+      const startStr = timeLine.slice(0, arrowIdx).trim().split(/\s+/)[0];
+      const endStr = timeLine.slice(arrowIdx + 3).trim().split(/\s+/)[0];
+      const start = parseTimestamp(startStr);
+      const end = parseTimestamp(endStr);
       const textLines = lines.slice(timeLineIdx + 1).join('\n').trim();
 
       if (textLines && !isNaN(start) && !isNaN(end)) {
         items.push({
           id: autoId++,
-          start: start,
-          end: end,
+          start,
+          end,
           text: textLines,
           fa: textLines
         });
       }
     }
+
+    if (items.length === 0) {
+      const regex = /(?:(\d+)\s*\n)?(?:((?:\d+:)?\d{1,2}:\d{2}[,.]\d{1,3})\s*-->\s*((?:\d+:)?\d{1,2}:\d{2}[,.]\d{1,3}))\s*\n([\s\S]*?)(?=(?:\n\s*\d+\s*\n(?:\d+:)?\d{1,2}:\d{2}|$))/g;
+      let match;
+      while ((match = regex.exec(normalized)) !== null) {
+        const start = parseTimestamp(match[2]);
+        const end = parseTimestamp(match[3]);
+        const text = match[4].trim();
+        if (text) {
+          items.push({
+            id: autoId++,
+            start,
+            end,
+            text,
+            fa: text
+          });
+        }
+      }
+    }
+
     return items;
   }
 
@@ -1068,18 +1131,28 @@
     sendResponse({ success: true, count: parsedItems.length });
   }
 
-  function applyCustomSrtItems(parsedItems, vid) {
+  async function applyCustomSrtItems(parsedItems, vid) {
+    if (!vid) vid = getVideoId();
     activeSubtitles = parsedItems;
     cachedSubtitles = parsedItems;
     isEnabled = true;
     isTranslationRequested = true;
     isTranslating = false;
 
-    chrome.runtime.sendMessage({
-      type: 'SAVE_FULL_CACHE',
-      videoId: vid,
-      items: parsedItems
-    }).catch(() => {});
+    if (vid) {
+      const key = `yt_sub_${vid}`;
+      try {
+        await chrome.storage.local.set({ [key]: parsedItems });
+        console.log(`[YT-FA-Translator] 💾 Saved ${parsedItems.length} lines directly to storage with key ${key}`);
+      } catch (err) {
+        console.warn('[YT-FA-Translator] Direct storage.set error, attempting via background:', err);
+        chrome.runtime.sendMessage({
+          type: 'SAVE_FULL_CACHE',
+          videoId: vid,
+          items: parsedItems
+        }).catch(() => {});
+      }
+    }
 
     ensureOverlay();
     applyStyles();
@@ -1087,6 +1160,111 @@
     updateTranslateButtonUI('active');
     setStatus(`زیرنویس SRT لود شد (${parsedItems.length} خط) ✓`, false);
     setTimeout(() => setStatus(null), 3500);
+  }
+
+  let pageFileInputEl = null;
+
+  function triggerPageFileInput() {
+    if (!pageFileInputEl) {
+      pageFileInputEl = document.createElement('input');
+      pageFileInputEl.type = 'file';
+      pageFileInputEl.accept = '.srt,text/plain';
+      pageFileInputEl.style.display = 'none';
+      document.body.appendChild(pageFileInputEl);
+
+      pageFileInputEl.addEventListener('change', (e) => {
+        const file = e.target.files?.[0];
+        if (file) {
+          handleDroppedFile(file);
+        }
+        pageFileInputEl.value = '';
+      });
+    }
+    pageFileInputEl.click();
+  }
+
+  function handleDroppedFile(file) {
+    if (!file) return;
+    setStatus(`در حال پردازش ${file.name}...`, true);
+    console.log(`[YT-FA-Translator] 📂 Reading SRT file: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`);
+
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const srtText = ev.target.result;
+        const vid = getVideoId();
+        if (!vid) {
+          setStatus('خطا: شناسه ویدیوی یوتیوب یافت نشد.', false, true);
+          return;
+        }
+
+        const parsed = parseSrtToItems(srtText);
+        console.log(`[YT-FA-Translator] 🔍 Parsed ${parsed.length} items from ${file.name}`);
+
+        if (parsed.length === 0) {
+          setStatus('خطا: قالب فایل SRT نامعتبر است یا خطی یافت نشد.', false, true);
+          return;
+        }
+
+        await applyCustomSrtItems(parsed, vid);
+      } catch (err) {
+        console.error('[YT-FA-Translator] File processing error:', err);
+        setStatus(`خطا: ${err.message}`, false, true);
+      }
+    };
+    reader.onerror = () => {
+      setStatus('خطا در خواندن فایل از دیسک.', false, true);
+    };
+    reader.readAsText(file);
+  }
+
+  function showDropzoneOverlay() {
+    let dropzone = document.getElementById('yt-fa-dropzone-modal');
+    if (!dropzone) {
+      dropzone = document.createElement('div');
+      dropzone.id = 'yt-fa-dropzone-modal';
+      dropzone.innerHTML = `
+        <div class="yt-fa-dropzone-box">
+          <div class="yt-fa-dropzone-icon">📤</div>
+          <div class="yt-fa-dropzone-title">آپلود زیرنویس SRT</div>
+          <div class="yt-fa-dropzone-desc">برای انتخاب فایل SRT از کامپیوتر کلیک کنید<br>یا فایل را مستقیماً اینجا بکشید و رها کنید (Drag & Drop)</div>
+          <button type="button" class="yt-fa-dropzone-close">✕ انصراف</button>
+        </div>
+      `;
+      document.body.appendChild(dropzone);
+
+      dropzone.querySelector('.yt-fa-dropzone-box').addEventListener('click', (e) => {
+        if (e.target.classList.contains('yt-fa-dropzone-close')) return;
+        dropzone.style.display = 'none';
+        triggerPageFileInput();
+      });
+
+      dropzone.querySelector('.yt-fa-dropzone-close').addEventListener('click', (e) => {
+        e.stopPropagation();
+        dropzone.style.display = 'none';
+      });
+
+      dropzone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        dropzone.querySelector('.yt-fa-dropzone-box')?.classList.add('drag-over');
+      });
+
+      dropzone.addEventListener('dragleave', () => {
+        dropzone.querySelector('.yt-fa-dropzone-box')?.classList.remove('drag-over');
+      });
+
+      dropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropzone.querySelector('.yt-fa-dropzone-box')?.classList.remove('drag-over');
+        dropzone.style.display = 'none';
+        const file = e.dataTransfer?.files?.[0];
+        if (file) {
+          handleDroppedFile(file);
+        }
+      });
+    }
+    dropzone.style.display = 'flex';
   }
 
   function setupDragAndDrop(player) {
@@ -1101,18 +1279,8 @@
     player.addEventListener('drop', (e) => {
       e.preventDefault();
       const file = e.dataTransfer?.files?.[0];
-      if (file && (file.name.endsWith('.srt') || file.type.includes('text'))) {
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-          const srtText = ev.target.result;
-          const vid = getVideoId();
-          if (!vid) return;
-          const parsed = parseSrtToItems(srtText);
-          if (parsed.length > 0) {
-            applyCustomSrtItems(parsed, vid);
-          }
-        };
-        reader.readAsText(file);
+      if (file && (file.name.endsWith('.srt') || file.type.includes('text') || file.name.endsWith('.txt'))) {
+        handleDroppedFile(file);
       }
     });
   }

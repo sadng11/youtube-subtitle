@@ -282,36 +282,162 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  if (uploadSrtBtn && srtFileInput) {
+  if (uploadSrtBtn) {
     uploadSrtBtn.addEventListener('click', () => {
-      srtFileInput.click();
+      let videoId = currentVideoState?.videoId || '';
+      let url = chrome.runtime.getURL('popup/uploader.html');
+      const params = [];
+      if (videoId) params.push(`videoId=${encodeURIComponent(videoId)}`);
+      if (activeTabId) params.push(`tabId=${activeTabId}`);
+      if (params.length > 0) url += `?${params.join('&')}`;
+
+      chrome.tabs.create({ url });
+      window.close();
     });
 
-    srtFileInput.addEventListener('change', (e) => {
+    if (srtFileInput) {
+      srtFileInput.addEventListener('change', (e) => {
       const file = e.target.files?.[0];
       if (!file) return;
 
+      showToast(`در حال پردازش فایل ${file.name}...`);
       const reader = new FileReader();
-      reader.onload = (ev) => {
-        const srtText = ev.target.result;
-        if (!activeTabId) return;
+      reader.onload = async (ev) => {
+        try {
+          const srtText = ev.target.result;
+          const parsedItems = parseSrtToItems(srtText);
 
-        chrome.tabs.sendMessage(activeTabId, { type: 'UPLOAD_SRT_CMD', srtText, fileName: file.name }, (res) => {
-          if (chrome.runtime.lastError || !res) {
-            showToast('خطا در ارسال فایل به تب یوتیوب.', true);
+          if (!parsedItems || parsedItems.length === 0) {
+            showToast('قالب فایل SRT نامعتبر است یا خطی یافت نشد.', true);
             return;
           }
-          if (res.success) {
-            showToast(`فایل SRT لود شد (${res.count} خط) ✓`);
-            setTimeout(checkActiveYouTubeTab, 300);
-          } else {
-            showToast(res.error || 'خطا در پردازش فایل SRT.', true);
+
+          // Determine videoId
+          let videoId = currentVideoState?.videoId;
+          if (!videoId && activeTabId) {
+            try {
+              const tab = await chrome.tabs.get(activeTabId);
+              if (tab && tab.url) {
+                const url = new URL(tab.url);
+                videoId = url.searchParams.get('v');
+                if (!videoId && url.pathname.startsWith('/shorts/')) {
+                  videoId = url.pathname.split('/shorts/')[1]?.split('/')[0]?.split('?')[0];
+                }
+              }
+            } catch (_) {}
           }
-        });
+
+          if (!videoId) {
+            showToast('خطا: ویدیوی فعال یوتیوب شناسایی نشد.', true);
+            return;
+          }
+
+          // Save directly to chrome.storage.local!
+          const key = `yt_sub_${videoId}`;
+          await chrome.storage.local.set({ [key]: parsedItems });
+          console.log(`[Popup] 💾 Saved ${parsedItems.length} lines to storage key: ${key}`);
+
+          showToast(`فایل SRT لود شد (${parsedItems.length} خط) ✓`);
+
+          // Notify content script to display immediately
+          if (activeTabId) {
+            chrome.tabs.sendMessage(activeTabId, {
+              type: 'LOAD_SRT_ITEMS_CMD',
+              items: parsedItems,
+              videoId
+            }, () => {
+              setTimeout(checkActiveYouTubeTab, 300);
+            });
+          }
+        } catch (err) {
+          console.error('[Popup] Upload error:', err);
+          showToast(`خطا در پردازش فایل: ${err.message}`, true);
+        }
+      };
+      reader.onerror = () => {
+        showToast('خطا در خواندن فایل از دیسک.', true);
       };
       reader.readAsText(file);
       srtFileInput.value = '';
     });
+    }
+  }
+
+  function parseSrtToItems(srtText) {
+    const items = [];
+    if (!srtText) return items;
+
+    const cleanText = srtText.replace(/^\uFEFF/, '');
+    const normalized = cleanText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    function parseTimestamp(timeStr) {
+      if (!timeStr) return 0;
+      const match = timeStr.match(/(?:(\d+):)?(\d{1,2}):(\d{2})[,.](\d{1,3})/);
+      if (!match) {
+        const m2 = timeStr.match(/(\d{1,2}):(\d{2})/);
+        if (m2) return parseInt(m2[1], 10) * 60 + parseInt(m2[2], 10);
+        return parseFloat(timeStr) || 0;
+      }
+      const hours = match[1] ? parseInt(match[1], 10) : 0;
+      const minutes = parseInt(match[2], 10);
+      const seconds = parseInt(match[3], 10);
+      const ms = parseInt(match[4].padEnd(3, '0').slice(0, 3), 10);
+      return hours * 3600 + minutes * 60 + seconds + ms / 1000;
+    }
+
+    const blocks = normalized.split(/\n\s*\n/);
+    let autoId = 1;
+
+    for (const block of blocks) {
+      const lines = block.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+      if (lines.length < 2) continue;
+
+      let timeLineIdx = -1;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes('-->')) {
+          timeLineIdx = i;
+          break;
+        }
+      }
+      if (timeLineIdx === -1) continue;
+
+      const timeLine = lines[timeLineIdx];
+      const arrowIdx = timeLine.indexOf('-->');
+      const start = parseTimestamp(timeLine.slice(0, arrowIdx));
+      const end = parseTimestamp(timeLine.slice(arrowIdx + 3));
+      const textLines = lines.slice(timeLineIdx + 1).join('\n').trim();
+
+      if (textLines && !isNaN(start) && !isNaN(end)) {
+        items.push({
+          id: autoId++,
+          start,
+          end,
+          text: textLines,
+          fa: textLines
+        });
+      }
+    }
+
+    if (items.length === 0) {
+      const regex = /(?:(\d+)\s*\n)?(?:((?:\d+:)?\d{1,2}:\d{2}[,.]\d{1,3})\s*-->\s*((?:\d+:)?\d{1,2}:\d{2}[,.]\d{1,3}))\s*\n([\s\S]*?)(?=(?:\n\s*\d+\s*\n(?:\d+:)?\d{1,2}:\d{2}|$))/g;
+      let match;
+      while ((match = regex.exec(normalized)) !== null) {
+        const start = parseTimestamp(match[2]);
+        const end = parseTimestamp(match[3]);
+        const text = match[4].trim();
+        if (text) {
+          items.push({
+            id: autoId++,
+            start,
+            end,
+            text,
+            fa: text
+          });
+        }
+      }
+    }
+
+    return items;
   }
 
   checkActiveYouTubeTab();
