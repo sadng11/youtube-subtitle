@@ -155,6 +155,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         currentParsedItems = items;
         const key = `yt_sub_${activeVideoId}`;
 
+        // If existing storage for this video has English text, preserve it!
+        try {
+          const existingData = await chrome.storage.local.get(key);
+          const existingItems = existingData?.[key];
+          if (Array.isArray(existingItems) && existingItems.length > 0) {
+            const enItems = existingItems.filter((it) => it.text && !hasPersianText(it.text));
+            if (enItems.length > 0) {
+              enrichItemsWithEnglish(items, enItems);
+            }
+          }
+        } catch (_) {}
+
         // Save directly to chrome.storage.local
         await chrome.storage.local.set({ [key]: items });
 
@@ -268,6 +280,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     })[m]);
   }
 
+  function hasPersianText(str) {
+    if (!str || typeof str !== 'string') return false;
+    return /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/.test(str);
+  }
+
+  function enrichItemsWithEnglish(targetItems, englishItems) {
+    if (!Array.isArray(targetItems) || !Array.isArray(englishItems) || englishItems.length === 0) {
+      return false;
+    }
+    let updatedCount = 0;
+    targetItems.forEach((item) => {
+      if (!item.text || item.text === item.fa || hasPersianText(item.text)) {
+        const overlaps = englishItems.filter((en) => {
+          if (!en.text || hasPersianText(en.text)) return false;
+          const overlap = Math.min(en.end, item.end) - Math.max(en.start, item.start);
+          return overlap > 0.05;
+        });
+        if (overlaps.length > 0) {
+          item.text = overlaps.map((o) => o.text.trim()).filter(Boolean).join(' ');
+          updatedCount++;
+        } else {
+          item.text = '';
+        }
+      }
+    });
+    return updatedCount > 0;
+  }
+
   // 4. Robust SRT Parser
   function parseSrtToItems(srtText) {
     if (!srtText || typeof srtText !== 'string') return [];
@@ -289,6 +329,26 @@ document.addEventListener('DOMContentLoaded', async () => {
       const seconds = parseInt(match[3], 10);
       const ms = parseInt(match[4].padEnd(3, '0').slice(0, 3), 10);
       return hours * 3600 + minutes * 60 + seconds + ms / 1000;
+    }
+
+    function separateLanguages(textLines) {
+      const subLines = textLines.split('\n').map((l) => l.trim()).filter(Boolean);
+      const faLines = [];
+      const enLines = [];
+      for (const line of subLines) {
+        if (hasPersianText(line)) {
+          faLines.push(line);
+        } else {
+          enLines.push(line);
+        }
+      }
+      if (faLines.length > 0 && enLines.length > 0) {
+        return { en: enLines.join('\n'), fa: faLines.join('\n') };
+      } else if (faLines.length > 0) {
+        return { en: '', fa: faLines.join('\n') };
+      } else {
+        return { en: enLines.join('\n'), fa: '' };
+      }
     }
 
     const blocks = normalized.split(/\n\s*\n/);
@@ -317,12 +377,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       const textLines = lines.slice(timeLineIdx + 1).join('\n').trim();
 
       if (textLines && !isNaN(start) && !isNaN(end)) {
+        const langResult = separateLanguages(textLines);
         items.push({
           id: autoId++,
           start,
           end,
-          text: textLines,
-          fa: textLines
+          text: langResult.en,
+          fa: langResult.fa
         });
       }
     }
@@ -336,12 +397,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const end = parseTimestamp(match[3]);
         const text = match[4].trim();
         if (text) {
+          const langResult = separateLanguages(text);
           items.push({
             id: autoId++,
             start,
             end,
-            text,
-            fa: text
+            text: langResult.en,
+            fa: langResult.fa
           });
         }
       }

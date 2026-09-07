@@ -363,6 +363,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  function hasPersianText(str) {
+    if (!str || typeof str !== 'string') return false;
+    return /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/.test(str);
+  }
+
   function parseSrtToItems(srtText) {
     const items = [];
     if (!srtText) return items;
@@ -372,17 +377,38 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function parseTimestamp(timeStr) {
       if (!timeStr) return 0;
-      const match = timeStr.match(/(?:(\d+):)?(\d{1,2}):(\d{2})[,.](\d{1,3})/);
+      const clean = timeStr.trim().replace(',', '.');
+      const match = clean.match(/(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[.,](\d{1,3})/);
       if (!match) {
-        const m2 = timeStr.match(/(\d{1,2}):(\d{2})/);
+        const m2 = clean.match(/(\d{1,2}):(\d{2})/);
         if (m2) return parseInt(m2[1], 10) * 60 + parseInt(m2[2], 10);
-        return parseFloat(timeStr) || 0;
+        return parseFloat(clean) || 0;
       }
       const hours = match[1] ? parseInt(match[1], 10) : 0;
       const minutes = parseInt(match[2], 10);
       const seconds = parseInt(match[3], 10);
       const ms = parseInt(match[4].padEnd(3, '0').slice(0, 3), 10);
       return hours * 3600 + minutes * 60 + seconds + ms / 1000;
+    }
+
+    function separateLanguages(textLines) {
+      const subLines = textLines.split('\n').map((l) => l.trim()).filter(Boolean);
+      const faLines = [];
+      const enLines = [];
+      for (const line of subLines) {
+        if (hasPersianText(line)) {
+          faLines.push(line);
+        } else {
+          enLines.push(line);
+        }
+      }
+      if (faLines.length > 0 && enLines.length > 0) {
+        return { en: enLines.join('\n'), fa: faLines.join('\n') };
+      } else if (faLines.length > 0) {
+        return { en: '', fa: faLines.join('\n') };
+      } else {
+        return { en: enLines.join('\n'), fa: '' };
+      }
     }
 
     const blocks = normalized.split(/\n\s*\n/);
@@ -403,17 +429,21 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       const timeLine = lines[timeLineIdx];
       const arrowIdx = timeLine.indexOf('-->');
-      const start = parseTimestamp(timeLine.slice(0, arrowIdx));
-      const end = parseTimestamp(timeLine.slice(arrowIdx + 3));
+      const startStr = timeLine.slice(0, arrowIdx).trim().split(/\s+/)[0];
+      const endStr = timeLine.slice(arrowIdx + 3).trim().split(/\s+/)[0];
+
+      const start = parseTimestamp(startStr);
+      const end = parseTimestamp(endStr);
       const textLines = lines.slice(timeLineIdx + 1).join('\n').trim();
 
       if (textLines && !isNaN(start) && !isNaN(end)) {
+        const langResult = separateLanguages(textLines);
         items.push({
           id: autoId++,
           start,
           end,
-          text: textLines,
-          fa: textLines
+          text: langResult.en,
+          fa: langResult.fa
         });
       }
     }
@@ -426,12 +456,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const end = parseTimestamp(match[3]);
         const text = match[4].trim();
         if (text) {
+          const langResult = separateLanguages(text);
           items.push({
             id: autoId++,
             start,
             end,
-            text,
-            fa: text
+            text: langResult.en,
+            fa: langResult.fa
           });
         }
       }

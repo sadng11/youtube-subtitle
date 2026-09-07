@@ -355,6 +355,22 @@
     // Check cache first
     const cacheRes = await chrome.runtime.sendMessage({ type: 'CHECK_CACHE', videoId });
     if (cacheRes && cacheRes.cached && Array.isArray(cacheRes.items) && cacheRes.items.length > 0) {
+      // Clean up any items where text was wrongly set to Persian
+      cacheRes.items.forEach((it) => {
+        if (!it.fa && hasPersianText(it.text)) {
+          it.fa = it.text;
+        }
+        if (it.text === it.fa || hasPersianText(it.text)) {
+          it.text = '';
+        }
+      });
+
+      // Try enriching with English if available
+      if (latestRawTimedText) {
+        const enItems = parseSubtitleRawData(latestRawTimedText);
+        enrichItemsWithEnglish(cacheRes.items, enItems);
+      }
+
       const isFully = cacheRes.items.every((s) => s.fa && s.fa.trim().length > 0);
       if (isFully) {
         console.log('[YT-FA-Translator] ⚡ Loaded full translation from local cache:', cacheRes.items.length, 'lines.');
@@ -364,6 +380,12 @@
         applyStyles();
         updateTranslateButtonUI('active');
         onTimeUpdate();
+
+        // If English is missing, request captions so handleInterceptedTimedText can enrich them
+        const needsEn = activeSubtitles.some((s) => !s.text);
+        if (needsEn && !latestRawTimedText) {
+          window.postMessage({ type: 'YT_FA_START_TRANSLATION' }, '*');
+        }
         return;
       } else {
         const translatedCount = cacheRes.items.filter((s) => s.fa && s.fa.trim()).length;
@@ -512,8 +534,14 @@
     );
 
     if (currentItem && (currentItem.fa || currentItem.text)) {
-      if (currentItem.fa) {
-        subFaEl.textContent = currentItem.fa;
+      // 1. Determine Persian text
+      let faText = currentItem.fa || '';
+      if (!faText && hasPersianText(currentItem.text)) {
+        faText = currentItem.text;
+      }
+
+      if (faText) {
+        subFaEl.textContent = faText;
         subFaEl.style.opacity = '1';
       } else if (isTranslating) {
         subFaEl.textContent = '... در حال ترجمه';
@@ -521,7 +549,22 @@
       } else {
         subFaEl.textContent = '';
       }
-      subEnEl.textContent = currentItem.text || '';
+
+      // 2. Determine English text (MUST NOT be Persian or duplicate)
+      let enText = '';
+      if (currentItem.text && currentItem.text !== faText && !hasPersianText(currentItem.text)) {
+        enText = currentItem.text;
+      }
+
+      // If bilingual mode is active and we have real English text, display English line
+      if (isBilingual && enText) {
+        subEnEl.textContent = enText;
+        subEnEl.style.display = 'block';
+      } else {
+        subEnEl.textContent = '';
+        subEnEl.style.display = 'none';
+      }
+
       subBoxEl.style.display = 'inline-flex';
     } else {
       subBoxEl.style.display = 'none';
@@ -633,24 +676,44 @@
     });
   }
 
-  // 8. Progressive Batch Translation
   async function handleInterceptedTimedText(rawText) {
     const videoId = getVideoId();
-    if (!videoId || hasStartedTranslation || (activeSubtitles.length > 0 && activeSubtitles.every((s) => s.fa && s.fa.trim()))) return;
-    hasStartedTranslation = true;
-    clearTimeout(preparingTimeout);
-    activeTranslationRunId++;
-    const currentRunId = activeTranslationRunId;
+    if (!videoId) return;
+
+    const parsedItems = parseSubtitleRawData(rawText);
+    if (!parsedItems || parsedItems.length === 0) {
+      return;
+    }
 
     // Check Cache first
     const cacheRes = await chrome.runtime.sendMessage({ type: 'CHECK_CACHE', videoId });
     const cachedItems = (cacheRes && cacheRes.cached && Array.isArray(cacheRes.items)) ? cacheRes.items : (cachedSubtitles || []);
+
+    // Clean up Persian from English text field in cache
+    cachedItems.forEach((it) => {
+      if (!it.fa && hasPersianText(it.text)) {
+        it.fa = it.text;
+      }
+      if (it.text === it.fa || hasPersianText(it.text)) {
+        it.text = '';
+      }
+    });
+
+    // Enrich cached items with the newly intercepted English subtitles!
+    if (cachedItems.length > 0) {
+      const enriched = enrichItemsWithEnglish(cachedItems, parsedItems);
+      if (enriched) {
+        chrome.storage.local.set({ [`yt_sub_${videoId}`]: cachedItems }).catch(() => {});
+      }
+    }
+
     const isFullyCached = cachedItems.length > 0 && cachedItems.every((s) => s.fa && s.fa.trim().length > 0);
 
     if (isFullyCached) {
-      console.log('[YT-FA-Translator] ⚡ Loaded full translation from local cache:', cachedItems.length, 'lines.');
+      console.log('[YT-FA-Translator] ⚡ Loaded full translation from local cache with English subtitles:', cachedItems.length, 'lines.');
       activeSubtitles = cachedItems;
       cachedSubtitles = cachedItems;
+      clearTimeout(preparingTimeout);
       setStatus(null);
       applyStyles();
       updateTranslateButtonUI('active');
@@ -658,11 +721,10 @@
       return;
     }
 
-    const parsedItems = parseSubtitleRawData(rawText);
-    if (!parsedItems || parsedItems.length === 0) {
-      hasStartedTranslation = false;
-      return;
-    }
+    hasStartedTranslation = true;
+    clearTimeout(preparingTimeout);
+    activeTranslationRunId++;
+    const currentRunId = activeTranslationRunId;
 
     // Populate translationMap with already-cached lines
     const translationMap = new Map();
@@ -956,6 +1018,34 @@
     return srtContent.trim() + '\n';
   }
 
+  function hasPersianText(str) {
+    if (!str || typeof str !== 'string') return false;
+    return /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/.test(str);
+  }
+
+  function enrichItemsWithEnglish(targetItems, englishItems) {
+    if (!Array.isArray(targetItems) || !Array.isArray(englishItems) || englishItems.length === 0) {
+      return false;
+    }
+    let updatedCount = 0;
+    targetItems.forEach((item) => {
+      if (!item.text || item.text === item.fa || hasPersianText(item.text)) {
+        const overlaps = englishItems.filter((en) => {
+          if (!en.text || hasPersianText(en.text)) return false;
+          const overlap = Math.min(en.end, item.end) - Math.max(en.start, item.start);
+          return overlap > 0.05;
+        });
+        if (overlaps.length > 0) {
+          item.text = overlaps.map((o) => o.text.trim()).filter(Boolean).join(' ');
+          updatedCount++;
+        } else {
+          item.text = '';
+        }
+      }
+    });
+    return updatedCount > 0;
+  }
+
   function parseSrtToItems(srtText) {
     const items = [];
     if (!srtText) return items;
@@ -978,6 +1068,26 @@
       return hours * 3600 + minutes * 60 + seconds + ms / 1000;
     }
 
+    function separateLanguages(textLines) {
+      const subLines = textLines.split('\n').map((l) => l.trim()).filter(Boolean);
+      const faLines = [];
+      const enLines = [];
+      for (const line of subLines) {
+        if (hasPersianText(line)) {
+          faLines.push(line);
+        } else {
+          enLines.push(line);
+        }
+      }
+      if (faLines.length > 0 && enLines.length > 0) {
+        return { en: enLines.join('\n'), fa: faLines.join('\n') };
+      } else if (faLines.length > 0) {
+        return { en: '', fa: faLines.join('\n') };
+      } else {
+        return { en: enLines.join('\n'), fa: '' };
+      }
+    }
+
     const blocks = normalized.split(/\n\s*\n/);
     let autoId = 1;
 
@@ -995,6 +1105,7 @@
       if (timeLineIdx === -1) continue;
 
       const timeLine = lines[timeLineIdx];
+      const arrowIdx = timeLine.indexOf('-->');
       const startStr = timeLine.slice(0, arrowIdx).trim().split(/\s+/)[0];
       const endStr = timeLine.slice(arrowIdx + 3).trim().split(/\s+/)[0];
       const start = parseTimestamp(startStr);
@@ -1002,12 +1113,13 @@
       const textLines = lines.slice(timeLineIdx + 1).join('\n').trim();
 
       if (textLines && !isNaN(start) && !isNaN(end)) {
+        const langResult = separateLanguages(textLines);
         items.push({
           id: autoId++,
           start,
           end,
-          text: textLines,
-          fa: textLines
+          text: langResult.en,
+          fa: langResult.fa
         });
       }
     }
@@ -1020,12 +1132,13 @@
         const end = parseTimestamp(match[3]);
         const text = match[4].trim();
         if (text) {
+          const langResult = separateLanguages(text);
           items.push({
             id: autoId++,
             start,
             end,
-            text,
-            fa: text
+            text: langResult.en,
+            fa: langResult.fa
           });
         }
       }
@@ -1133,6 +1246,26 @@
 
   async function applyCustomSrtItems(parsedItems, vid) {
     if (!vid) vid = getVideoId();
+
+    // 1. Clean up any item where text was wrongly set to Persian
+    parsedItems.forEach((it) => {
+      if (!it.fa && hasPersianText(it.text)) {
+        it.fa = it.text;
+      }
+      if (it.text === it.fa || hasPersianText(it.text)) {
+        it.text = '';
+      }
+    });
+
+    // 2. Enrich with English if timedtext is already intercepted or active
+    if (latestRawTimedText) {
+      const enItems = parseSubtitleRawData(latestRawTimedText);
+      enrichItemsWithEnglish(parsedItems, enItems);
+    } else if (activeSubtitles.length > 0) {
+      const enItems = activeSubtitles.filter((s) => s.text && !hasPersianText(s.text));
+      enrichItemsWithEnglish(parsedItems, enItems);
+    }
+
     activeSubtitles = parsedItems;
     cachedSubtitles = parsedItems;
     isEnabled = true;
@@ -1152,6 +1285,12 @@
           items: parsedItems
         }).catch(() => {});
       }
+    }
+
+    // 3. Trigger CC load so if English is still missing, it gets intercepted & enriched automatically
+    const stillNeedsEn = parsedItems.some((s) => !s.text);
+    if (stillNeedsEn) {
+      window.postMessage({ type: 'YT_FA_START_TRANSLATION' }, '*');
     }
 
     ensureOverlay();
