@@ -816,69 +816,119 @@
       const itemsToSend = chunkObj.items.filter((item) => !translationMap.get(item.id));
       if (itemsToSend.length === 0) continue;
 
-      try {
-        const res = await chrome.runtime.sendMessage({
-          type: 'TRANSLATE_CHUNK',
-          videoId: videoId,
-          chunkItems: itemsToSend
-        });
+      const MAX_CHUNK_RETRIES = 3;
+      let chunkSuccess = false;
 
-        if (!isTranslating || !isTranslationRequested || videoId !== getVideoId() || currentRunId !== activeTranslationRunId || res?.cancelled) {
-          console.log('[YT-FA-Translator] 🛑 Translation cancelled or tab/video changed. Discarding chunk', chunkObj.index);
+      for (let attempt = 1; attempt <= MAX_CHUNK_RETRIES; attempt++) {
+        if (!isTranslating || !isTranslationRequested || videoId !== getVideoId() || currentRunId !== activeTranslationRunId) {
+          console.log('[YT-FA-Translator] 🛑 Translation loop cancelled before chunk', chunkObj.index);
           break;
         }
 
-        if (res && res.success && Array.isArray(res.translations)) {
-          res.translations.forEach((t) => {
-            if (t && t.id !== undefined && t.fa) {
-              translationMap.set(t.id, t.fa);
-            }
+        try {
+          const res = await chrome.runtime.sendMessage({
+            type: 'TRANSLATE_CHUNK',
+            videoId: videoId,
+            chunkItems: itemsToSend
           });
 
-          // Immediately update activeSubtitles with translated lines
-          activeSubtitles = parsedItems.map((item) => ({
-            ...item,
-            fa: translationMap.get(item.id) || ''
-          }));
-
-          // Live update the subtitle overlay on screen!
-          applyStyles();
-          onTimeUpdate();
-
-          // PROGRESSIVE CACHE: Save to storage right after each chunk completes!
-          chrome.runtime.sendMessage({
-            type: 'SAVE_FULL_CACHE',
-            videoId: videoId,
-            items: activeSubtitles
-          }).catch(() => {});
-        } else {
-          if (res?.cancelled) {
-            console.log('[YT-FA-Translator] 🛑 Translation chunk was cancelled by backend.');
+          if (!isTranslating || !isTranslationRequested || videoId !== getVideoId() || currentRunId !== activeTranslationRunId || res?.cancelled) {
+            console.log('[YT-FA-Translator] 🛑 Translation cancelled or tab/video changed. Discarding chunk', chunkObj.index);
             break;
           }
-          console.error(
-            `%c[YT-FA-Translator] ❌ [LLM Batch Error]`,
-            'color: #dc2626; font-weight: bold;',
-            res?.error
+
+          if (res && res.success && Array.isArray(res.translations)) {
+            res.translations.forEach((t) => {
+              if (t && t.id !== undefined && t.fa) {
+                translationMap.set(t.id, t.fa);
+              }
+            });
+
+            // Immediately update activeSubtitles with translated lines
+            activeSubtitles = parsedItems.map((item) => ({
+              ...item,
+              fa: translationMap.get(item.id) || ''
+            }));
+
+            // Live update the subtitle overlay on screen!
+            applyStyles();
+            onTimeUpdate();
+
+            // PROGRESSIVE CACHE: Save to storage right after each chunk completes!
+            chrome.runtime.sendMessage({
+              type: 'SAVE_FULL_CACHE',
+              videoId: videoId,
+              items: activeSubtitles
+            }).catch(() => {});
+
+            chunkSuccess = true;
+            break;
+          } else {
+            if (res?.cancelled) {
+              console.log('[YT-FA-Translator] 🛑 Translation chunk was cancelled by backend.');
+              break;
+            }
+
+            const errorText = res?.error || 'خطای اتصال به سرور هوش مصنوعی';
+            console.warn(
+              `%c[YT-FA-Translator] ⚠️ [LLM Batch Attempt ${attempt}/${MAX_CHUNK_RETRIES} Failed]`,
+              'color: #f59e0b; font-weight: bold;',
+              errorText
+            );
+
+            // If API key is missing or unauthorized, fail immediately without waiting
+            const isAuthError = errorText.includes('کلید') || errorText.includes('401') || errorText.includes('403') || errorText.includes('API key');
+            if (isAuthError) {
+              console.error(`%c[YT-FA-Translator] ❌ [Auth Error]`, 'color: #dc2626; font-weight: bold;', errorText);
+              setStatus(`خطا: ${errorText}`, false, true);
+              isTranslating = false;
+              updateTranslateButtonUI('idle');
+              return;
+            }
+
+            if (attempt < MAX_CHUNK_RETRIES) {
+              const waitSeconds = attempt * 3;
+              setStatus(`خطای موقت سرور (${errorText.slice(0, 35)}...). تلاش مجدد دسته ${completedChunks} تا ${waitSeconds} ثانیه دیگر (${attempt + 1}/${MAX_CHUNK_RETRIES})...`, true);
+              await new Promise((r) => setTimeout(r, waitSeconds * 1000));
+            } else {
+              console.error(
+                `%c[YT-FA-Translator] ❌ [LLM Batch Error - Chunk ${chunkObj.index} Failed]`,
+                'color: #dc2626; font-weight: bold;',
+                errorText
+              );
+              setStatus(`خطا در دسته ${completedChunks} (${errorText.slice(0, 30)}...). ادامه ترجمه سایر بخش‌ها...`, true);
+              await new Promise((r) => setTimeout(r, 1500));
+              break;
+            }
+          }
+        } catch (err) {
+          if (!isTranslating || !isTranslationRequested || videoId !== getVideoId() || currentRunId !== activeTranslationRunId) {
+            break;
+          }
+          console.warn(
+            `%c[YT-FA-Translator] ⚠️ [LLM Batch Request Exception on Attempt ${attempt}/${MAX_CHUNK_RETRIES}]`,
+            'color: #f59e0b; font-weight: bold;',
+            err
           );
-          setStatus(`خطا در ترجمه: ${res?.error || 'خطای اتصال به هوش مصنوعی'}`, false, true);
-          isTranslating = false;
-          updateTranslateButtonUI('idle');
-          return;
+          if (attempt < MAX_CHUNK_RETRIES) {
+            const waitSeconds = attempt * 3;
+            setStatus(`خطای موقت ارتباط. تلاش مجدد دسته ${completedChunks} تا ${waitSeconds} ثانیه دیگر...`, true);
+            await new Promise((r) => setTimeout(r, waitSeconds * 1000));
+          } else {
+            console.error(
+              `%c[YT-FA-Translator] ❌ [LLM Batch Exception]`,
+              'color: #dc2626; font-weight: bold;',
+              err
+            );
+            setStatus(`خطای ارتباط در دسته ${completedChunks}. ادامه سایر بخش‌ها...`, true);
+            await new Promise((r) => setTimeout(r, 1500));
+            break;
+          }
         }
-      } catch (err) {
-        if (!isTranslating || !isTranslationRequested || videoId !== getVideoId() || currentRunId !== activeTranslationRunId) {
-          break;
-        }
-        console.error(
-          `%c[YT-FA-Translator] ❌ [LLM Batch Request Failed Exception]`,
-          'color: #dc2626; font-weight: bold;',
-          err
-        );
-        setStatus(`خطا: ${err.message}`, false, true);
-        isTranslating = false;
-        updateTranslateButtonUI('idle');
-        return;
+      }
+
+      if (!isTranslating || !isTranslationRequested || videoId !== getVideoId() || currentRunId !== activeTranslationRunId) {
+        break;
       }
     }
 

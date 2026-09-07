@@ -520,12 +520,82 @@ async function callGeminiWithFallback(apiKey, modelName, batchItems, signal) {
   throw lastError || new Error('هیچ‌یک از مدل‌های Gemini قادر به پردازش درخواست نبودند.');
 }
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 45000, parentSignal = null) {
+  const ctrl = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ctrl.abort(new Error(`تایم‌اوت ارتباط با سرور (${Math.round(timeoutMs / 1000)} ثانیه)`));
+  }, timeoutMs);
+
+  const onParentAbort = () => {
+    clearTimeout(timer);
+    ctrl.abort(parentSignal.reason);
+  };
+
+  if (parentSignal) {
+    if (parentSignal.aborted) {
+      clearTimeout(timer);
+      ctrl.abort(parentSignal.reason);
+    } else {
+      parentSignal.addEventListener('abort', onParentAbort, { once: true });
+    }
+  }
+
+  try {
+    const res = await fetch(url, { ...options, signal: ctrl.signal });
+    return res;
+  } catch (err) {
+    if (timedOut) {
+      throw new Error(`پاسخ سرور با تایم‌اوت (${Math.round(timeoutMs / 1000)} ثانیه) مواجه شد.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    if (parentSignal) {
+      parentSignal.removeEventListener('abort', onParentAbort);
+    }
+  }
+}
+
+function sleepWithSignal(ms, signal) {
+  if (signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    }
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+}
+
+function calculateBackoff(attempt, baseDelay = 1500) {
+  const exp = Math.min(attempt - 1, 4);
+  const jitter = Math.floor(Math.random() * 600);
+  return Math.min(baseDelay * Math.pow(2, exp) + jitter, 15000);
+}
+
 async function executeGeminiCall(cleanKey, model, batchItems, signal) {
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-  const startTime = Date.now();
-  console.log(`[YT-FA-Translator SW] 🚀 [Gemini Calling] Model: ${model} | Items count: ${batchItems.length}`);
+  const MAX_RETRIES = 2;
+  let lastError = null;
 
-  const prompt = `You are a professional subtitle translator from English to Persian (Farsi).
+  for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
+    const startTime = Date.now();
+    console.log(
+      `%c[YT-FA-Translator SW] 🚀 [Gemini Request] Model: ${model} (تلاش ${attempt}/${MAX_RETRIES + 1}) | تعداد موارد: ${batchItems.length}`,
+      'color: #3b82f6; font-weight: bold;'
+    );
+
+    const prompt = `You are a professional subtitle translator from English to Persian (Farsi).
 Translate the English text in the following JSON array into natural, fluent, and conversational Persian.
 Preserve the exact meaning and tone suitable for YouTube video captions.
 
@@ -538,49 +608,91 @@ CRITICAL RULES:
 Input items:
 ${JSON.stringify(batchItems)}`;
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(cleanKey)}`;
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': cleanKey
-    },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.3
-      }
-    }),
-    signal: signal
-  });
-
-  const duration = Date.now() - startTime;
-  console.log(`[YT-FA-Translator SW] 📥 [Gemini Response Status]: ${response.status} (${duration}ms)`);
-
-  if (!response.ok) {
-    const errBody = await response.text();
-    let msg = `خطای Gemini (${response.status})`;
+    let response;
     try {
-      const errJson = JSON.parse(errBody);
-      if (errJson.error?.message) msg += `: ${errJson.error.message}`;
-    } catch (_) {
-      msg += `: ${errBody.slice(0, 150)}`;
+      response = await fetchWithTimeout(
+        url,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': cleanKey
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.3
+            }
+          })
+        },
+        45000,
+        signal
+      );
+    } catch (netErr) {
+      if (signal?.aborted || netErr.name === 'AbortError') {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      console.warn(`[YT-FA-Translator SW] ⚠️ خطای ارتباط یا تایم‌اوت جمینای (${model} - تلاش ${attempt}):`, netErr.message);
+      lastError = netErr;
+
+      if (attempt <= MAX_RETRIES) {
+        const delay = calculateBackoff(attempt);
+        console.log(`[YT-FA-Translator SW] ⏳ تلاش مجدد جمینای پس از ${delay} میلی‌ثانیه...`);
+        await sleepWithSignal(delay, signal);
+        continue;
+      }
+      throw lastError;
     }
-    console.error('[YT-FA-Translator SW] ❌ [Gemini Error Body]:', msg);
-    throw new Error(msg);
+
+    const duration = Date.now() - startTime;
+    console.log(`[YT-FA-Translator SW] 📥 [Gemini Response Status]: ${response.status} (${duration}ms)`);
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      let msg = `خطای Gemini (${response.status})`;
+      try {
+        const errJson = JSON.parse(errBody);
+        if (errJson.error?.message) msg += `: ${errJson.error.message}`;
+      } catch (_) {
+        msg += `: ${errBody.slice(0, 150)}`;
+      }
+      console.error(`[YT-FA-Translator SW] ❌ [Gemini Error Body - تلاش ${attempt}]:`, msg);
+      lastError = new Error(msg);
+
+      if ([400, 401, 403, 404].includes(response.status)) {
+        throw lastError;
+      }
+
+      if (attempt <= MAX_RETRIES) {
+        const delay = calculateBackoff(attempt);
+        console.warn(`[YT-FA-Translator SW] ⏳ خطای سرور جمینای (${response.status}: ${msg}). تلاش مجدد در ${delay} میلی‌ثانیه دیگر...`);
+        await sleepWithSignal(delay, signal);
+        continue;
+      }
+
+      throw lastError;
+    }
+
+    const data = await response.json();
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+    console.log('[YT-FA-Translator SW] 📋 [Gemini Raw Text Snippet]:', rawText.slice(0, 150));
+
+    const parsed = parseJsonResponse(rawText);
+    if (!parsed || parsed.length === 0) {
+      if (attempt <= MAX_RETRIES) {
+        console.warn(`[YT-FA-Translator SW] ⚠️ پاسخ جمینای ساختار JSON معتبر نداشت. تلاش مجدد...`);
+        await sleepWithSignal(1200, signal);
+        continue;
+      }
+      throw new Error('پاسخ مدل Gemini ساختار JSON معتبر نداشت.');
+    }
+
+    return parsed;
   }
 
-  const data = await response.json();
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
-  console.log('[YT-FA-Translator SW] 📋 [Gemini Raw Text Snippet]:', rawText.slice(0, 150));
-
-  const parsed = parseJsonResponse(rawText);
-  if (!parsed || parsed.length === 0) {
-    throw new Error('پاسخ مدل Gemini ساختار JSON معتبر نداشت.');
-  }
-
-  return parsed;
+  throw lastError || new Error('خطا در دریافت پاسخ از مدل Gemini.');
 }
 
 async function callOpenAI(apiKey, modelName, batchItems, signal) {
@@ -592,9 +704,6 @@ async function callOpenAICompatible(baseUrl, apiKey, modelName, batchItems, sign
   const model = modelName || 'gpt-4o-mini';
   const cleanKey = (apiKey || '').trim();
   const url = normalizeChatCompletionsUrl(baseUrl);
-  const startTime = Date.now();
-
-  console.log(`[YT-FA-Translator SW] 🚀 [OpenAI-Compatible Request] Sending ${batchItems.length} items to ${url} (model: ${model})`);
 
   const systemPrompt = `You are an expert English-to-Persian subtitle translator.
 Translate each item into natural, fluent Persian for video captions.
@@ -616,86 +725,142 @@ Always respond with valid JSON: {"translations": [{"id": <number>, "fa": "<persi
     temperature: 0.3
   };
 
-  let response;
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        ...baseBody,
-        response_format: { type: 'json_object' }
-      }),
-      signal: signal
-    });
-  } catch (netErr) {
-    if (signal?.aborted || netErr.name === 'AbortError') {
-      throw new DOMException('Aborted', 'AbortError');
-    }
-    console.error(`[YT-FA-Translator SW] ❌ Network error connecting to ${url}:`, netErr);
-    throw new Error(`خطای ارتباط با سرور (${url}): ${netErr.message}`);
-  }
+  const MAX_RETRIES = 3;
+  let lastError = null;
 
-  // Gracefully retry without response_format if custom server rejects it
-  if (!response.ok && response.status === 400) {
+  for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
+    const startTime = Date.now();
+    console.log(
+      `%c[YT-FA-Translator SW] 🚀 [OpenAI-Compatible Request] (تلاش ${attempt}/${MAX_RETRIES + 1}) Sending ${batchItems.length} items to ${url} (model: ${model})`,
+      'color: #3b82f6; font-weight: bold;'
+    );
+
+    let response;
     try {
-      const errClone = await response.clone().text();
-      if (
-        errClone.includes('response_format') ||
-        errClone.includes('json_object') ||
-        errClone.includes('schema') ||
-        errClone.includes('Additional properties are not allowed')
-      ) {
-        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-        console.warn('[YT-FA-Translator SW] ⚠️ Server does not support response_format: json_object. Retrying without it...');
-        response = await fetch(url, {
+      response = await fetchWithTimeout(
+        url,
+        {
           method: 'POST',
           headers,
-          body: JSON.stringify(baseBody),
-          signal: signal
-        });
+          body: JSON.stringify({
+            ...baseBody,
+            response_format: { type: 'json_object' }
+          })
+        },
+        45000,
+        signal
+      );
+    } catch (netErr) {
+      if (signal?.aborted || netErr.name === 'AbortError') {
+        throw new DOMException('Aborted', 'AbortError');
       }
-    } catch (_) {}
-  }
+      console.warn(`[YT-FA-Translator SW] ⚠️ خطای شبکه یا تایم‌اوت در اتصال به ${url} (تلاش ${attempt}):`, netErr.message);
+      lastError = new Error(`خطای ارتباط با سرور (${url}): ${netErr.message}`);
 
-  const duration = Date.now() - startTime;
-  console.log(`[YT-FA-Translator SW] 📥 [Response Status]: ${response.status} (${duration}ms)`);
-
-  if (!response.ok) {
-    const errBody = await response.text();
-    let msg = `خطای سرور (${response.status})`;
-    try {
-      const errJson = JSON.parse(errBody);
-      if (errJson.error?.message) msg += `: ${errJson.error.message}`;
-      else if (errJson.message) msg += `: ${errJson.message}`;
-    } catch (_) {
-      msg += `: ${errBody.slice(0, 150)}`;
+      if (attempt <= MAX_RETRIES) {
+        const delay = calculateBackoff(attempt);
+        console.log(`[YT-FA-Translator SW] ⏳ تلاش مجدد پس از ${delay} میلی‌ثانیه...`);
+        await sleepWithSignal(delay, signal);
+        continue;
+      }
+      throw lastError;
     }
-    console.error('[YT-FA-Translator SW] ❌ [API Error]:', msg);
-    throw new Error(msg);
+
+    // Gracefully retry without response_format if custom server rejects it with 400
+    if (!response.ok && response.status === 400) {
+      try {
+        const errClone = await response.clone().text();
+        if (
+          errClone.includes('response_format') ||
+          errClone.includes('json_object') ||
+          errClone.includes('schema') ||
+          errClone.includes('Additional properties are not allowed')
+        ) {
+          if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+          console.warn('[YT-FA-Translator SW] ⚠️ Server does not support response_format: json_object. Retrying without it...');
+          response = await fetchWithTimeout(
+            url,
+            {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(baseBody)
+            },
+            45000,
+            signal
+          );
+        }
+      } catch (_) {}
+    }
+
+    const duration = Date.now() - startTime;
+    console.log(`[YT-FA-Translator SW] 📥 [Response Status]: ${response.status} (${duration}ms)`);
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      let msg = `خطای سرور (${response.status})`;
+      try {
+        const errJson = JSON.parse(errBody);
+        if (errJson.error?.message) msg += `: ${errJson.error.message}`;
+        else if (errJson.message) msg += `: ${errJson.message}`;
+      } catch (_) {
+        msg += `: ${errBody.slice(0, 150)}`;
+      }
+      console.error(`[YT-FA-Translator SW] ❌ [API Error - تلاش ${attempt}]:`, msg);
+      lastError = new Error(msg);
+
+      if ([401, 403, 404].includes(response.status)) {
+        throw lastError;
+      }
+
+      if (attempt <= MAX_RETRIES) {
+        let delayMs = calculateBackoff(attempt);
+        const retryAfterHeader = response.headers?.get('retry-after');
+        if (retryAfterHeader) {
+          const parsedSec = parseInt(retryAfterHeader, 10);
+          if (!isNaN(parsedSec) && parsedSec > 0 && parsedSec <= 30) {
+            delayMs = parsedSec * 1000;
+          }
+        }
+        console.warn(`[YT-FA-Translator SW] ⏳ خطای موقت سرور (${response.status}: ${msg}). تلاش مجدد در ${delayMs} میلی‌ثانیه دیگر (تلاش ${attempt + 1}/${MAX_RETRIES + 1})...`);
+        await sleepWithSignal(delayMs, signal);
+        continue;
+      }
+
+      throw lastError;
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || '{}';
+    console.log('[YT-FA-Translator SW] 📋 [Raw Response Snippet]:', content.slice(0, 150));
+
+    let parsed = [];
+    try {
+      const obj = JSON.parse(content);
+      if (Array.isArray(obj.translations)) parsed = obj.translations;
+      else if (Array.isArray(obj)) parsed = obj;
+    } catch (e) {
+      parsed = parseJsonResponse(content);
+    }
+
+    if (!parsed || parsed.length === 0) {
+      parsed = parseJsonResponse(content);
+    }
+
+    if (!parsed || parsed.length === 0) {
+      if (attempt <= MAX_RETRIES) {
+        console.warn(`[YT-FA-Translator SW] ⚠️ پاسخ مدل ساختار JSON معتبر نداشت. تلاش مجدد...`);
+        await sleepWithSignal(1200, signal);
+        continue;
+      }
+      throw new Error('پاسخ دریافتی از مدل شامل ساختار ترجمه معتبر نبود.');
+    }
+
+    return parsed;
   }
 
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || '{}';
-  console.log('[YT-FA-Translator SW] 📋 [Raw Response Snippet]:', content.slice(0, 150));
-
-  let parsed = [];
-  try {
-    const obj = JSON.parse(content);
-    if (Array.isArray(obj.translations)) parsed = obj.translations;
-    else if (Array.isArray(obj)) parsed = obj;
-  } catch (e) {
-    parsed = parseJsonResponse(content);
-  }
-
-  if (!parsed || parsed.length === 0) {
-    parsed = parseJsonResponse(content);
-  }
-
-  if (!parsed || parsed.length === 0) {
-    throw new Error('پاسخ دریافتی از مدل شامل ساختار ترجمه معتبر نبود.');
-  }
-
-  return parsed;
+  throw lastError || new Error('خطا در دریافت پاسخ از سرور.');
 }
 
 function parseJsonResponse(rawText) {
