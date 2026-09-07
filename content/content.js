@@ -124,7 +124,7 @@
       return true;
     }
     if (message.type === 'DOWNLOAD_SRT_CMD') {
-      handleDownloadSrt(sendResponse);
+      handleDownloadSrt(message.lang || 'fa', sendResponse);
       return true;
     }
     if (message.type === 'UPLOAD_SRT_CMD') {
@@ -902,11 +902,16 @@
     return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
   }
 
-  function itemsToSrt(items) {
+  function itemsToSrt(items, lang = 'fa') {
     let srtContent = '';
     let index = 1;
     for (const item of items) {
-      const text = (item.fa && item.fa.trim()) ? item.fa.trim() : (item.text ? item.text.trim() : '');
+      let text = '';
+      if (lang === 'en') {
+        text = (item.text && item.text.trim()) ? item.text.trim() : '';
+      } else {
+        text = (item.fa && item.fa.trim()) ? item.fa.trim() : (item.text ? item.text.trim() : '');
+      }
       if (!text) continue;
       const startStr = formatSrtTime(item.start);
       const endStr = formatSrtTime(item.end);
@@ -966,23 +971,33 @@
     return items;
   }
 
-  function handleDownloadSrt(sendResponse) {
+  function handleDownloadSrt(lang = 'fa', sendResponse) {
     const vid = getVideoId();
-    const sourceItems = activeSubtitles.length > 0 ? activeSubtitles : (cachedSubtitles || []);
+    let sourceItems = activeSubtitles.length > 0 ? activeSubtitles : (cachedSubtitles || []);
 
     const triggerDownload = (items) => {
-      const validItems = items.filter((s) => (s.fa && s.fa.trim()) || (s.text && s.text.trim()));
+      const validItems = items.filter((s) => {
+        if (lang === 'en') {
+          return (s.text && s.text.trim());
+        }
+        return (s.fa && s.fa.trim()) || (s.text && s.text.trim());
+      });
+
       if (!validItems || validItems.length === 0) {
-        sendResponse({ success: false, error: 'هیچ زیرنویسی برای این ویدیو در حافظه کش یافت نشد.' });
+        sendResponse({
+          success: false,
+          error: lang === 'en' ? 'زیرنویس انگلیسی یافت نشد. لطفاً ابتدا CC را در یوتیوب روشن کنید.' : 'هیچ زیرنویسی برای این ویدیو در حافظه کش یافت نشد.'
+        });
         return;
       }
 
-      const srtText = itemsToSrt(validItems);
+      const srtText = itemsToSrt(validItems, lang);
       const title = (document.title || 'subtitles')
         .replace(' - YouTube', '')
         .replace(/[\/\\?%*:|"<>]/g, '_')
         .trim();
-      const filename = `${title || vid || 'youtube'}_fa.srt`;
+      const suffix = lang === 'en' ? 'en' : 'fa';
+      const filename = `${title || vid || 'youtube'}_${suffix}.srt`;
 
       const blob = new Blob([srtText], { type: 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -994,21 +1009,41 @@
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 2000);
 
-      sendResponse({ success: true, count: validItems.length, filename });
+      sendResponse({ success: true, count: validItems.length, filename, lang });
     };
 
     if (sourceItems.length > 0) {
       triggerDownload(sourceItems);
-    } else if (vid) {
-      chrome.runtime.sendMessage({ type: 'CHECK_CACHE', videoId: vid }, (res) => {
-        if (res && res.cached && Array.isArray(res.items) && res.items.length > 0) {
-          triggerDownload(res.items);
-        } else {
-          sendResponse({ success: false, error: 'هیچ زیرنویسی برای این ویدیو در حافظه کش یافت نشد.' });
-        }
-      });
+    } else if (latestRawTimedText) {
+      const parsed = parseSubtitleRawData(latestRawTimedText);
+      if (parsed && parsed.length > 0) {
+        triggerDownload(parsed);
+      } else {
+        checkStorage();
+      }
     } else {
-      sendResponse({ success: false, error: 'هیچ زیرنویسی برای این ویدیو در حافظه کش یافت نشد.' });
+      checkStorage();
+    }
+
+    function checkStorage() {
+      if (vid) {
+        chrome.runtime.sendMessage({ type: 'CHECK_CACHE', videoId: vid }, (res) => {
+          if (res && res.cached && Array.isArray(res.items) && res.items.length > 0) {
+            triggerDownload(res.items);
+          } else if (latestRawTimedText) {
+            const parsed = parseSubtitleRawData(latestRawTimedText);
+            if (parsed && parsed.length > 0) {
+              triggerDownload(parsed);
+            } else {
+              sendResponse({ success: false, error: 'زیرنویسی یافت نشد. لطفاً دکمه CC یوتیوب را فعال کنید.' });
+            }
+          } else {
+            sendResponse({ success: false, error: 'زیرنویسی یافت نشد. لطفاً دکمه CC یوتیوب را فعال کنید.' });
+          }
+        });
+      } else {
+        sendResponse({ success: false, error: 'شناسه ویدیوی یوتیوب یافت نشد.' });
+      }
     }
   }
 

@@ -9,6 +9,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const startTranslateBtn = document.getElementById('startTranslateBtn');
   const startTranslateBtnText = document.getElementById('startTranslateBtnText');
   const downloadSrtBtn = document.getElementById('downloadSrtBtn');
+  const downloadSrtEnBtn = document.getElementById('downloadSrtEnBtn');
   const uploadSrtBtn = document.getElementById('uploadSrtBtn');
   const srtFileInput = document.getElementById('srtFileInput');
 
@@ -250,7 +251,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (downloadSrtBtn) {
     downloadSrtBtn.addEventListener('click', () => {
       if (!activeTabId) return;
-      chrome.tabs.sendMessage(activeTabId, { type: 'DOWNLOAD_SRT_CMD' }, (res) => {
+      chrome.tabs.sendMessage(activeTabId, { type: 'DOWNLOAD_SRT_CMD', lang: 'fa' }, (res) => {
         if (chrome.runtime.lastError || !res) {
           showToast('امکان دریافت زیرنویس از صفحه وجود ندارد.', true);
           return;
@@ -259,7 +260,24 @@ document.addEventListener('DOMContentLoaded', async () => {
           showToast(res.error || 'زیرنویسی در حافظه کش یافت نشد.', true);
           return;
         }
-        showToast(`زیرنویس با موفقیت دانلود شد (${res.count} خط) ✓`);
+        showToast(`زیرنویس فارسی با موفقیت دانلود شد (${res.count} خط) ✓`);
+      });
+    });
+  }
+
+  if (downloadSrtEnBtn) {
+    downloadSrtEnBtn.addEventListener('click', () => {
+      if (!activeTabId) return;
+      chrome.tabs.sendMessage(activeTabId, { type: 'DOWNLOAD_SRT_CMD', lang: 'en' }, (res) => {
+        if (chrome.runtime.lastError || !res) {
+          showToast('امکان دریافت زیرنویس از صفحه وجود ندارد.', true);
+          return;
+        }
+        if (!res.success) {
+          showToast(res.error || 'زیرنویس انگلیسی یافت نشد.', true);
+          return;
+        }
+        showToast(`زیرنویس انگلیسی با موفقیت دانلود شد (${res.count} خط) ✓`);
       });
     });
   }
